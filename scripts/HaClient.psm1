@@ -4,7 +4,7 @@ $script:MediaPlayerEntity = 'media_player.home_assistant_voice_0932b4_media_play
 $script:SatelliteEntity = 'assist_satellite.home_assistant_voice_0932b4_assist_satellite'
 $script:MuteEntity = 'switch.home_assistant_voice_0932b4_mute'
 $script:KillSwitchEntity = 'input_boolean.claude_notifications_enabled'
-$script:ChimeMediaId = 'media-source://media_source/local/claude-voice/chime.mp3'
+$script:ChimeMediaId = 'media-source://media_source/local/claude-voice/chime.wav'
 $script:AccountColors = @{ personal = @(0,120,255); work = @(160,32,240) }
 
 function Read-DotEnv {
@@ -29,7 +29,7 @@ function Get-HaConnection {
         $token = $env:CLAUDE_VOICE_HA_TOKEN
     }
     if (-not $url -or -not $token) {
-        throw "HA credentials not found — create claude-voice/.env (see claude-voice/.env.example) or set CLAUDE_VOICE_HA_URL/CLAUDE_VOICE_HA_TOKEN."
+        throw "HA credentials not found - create claude-voice/.env (see claude-voice/.env.example) or set CLAUDE_VOICE_HA_URL/CLAUDE_VOICE_HA_TOKEN."
     }
     @{
         Url     = $url
