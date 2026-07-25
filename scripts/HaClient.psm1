@@ -84,14 +84,28 @@ function Invoke-HaLed {
         [Parameter(Mandatory)][hashtable]$Connection,
         [string]$Account,
         [switch]$Pulse,
-        [switch]$Off
+        [switch]$Off,
+        [ValidateSet('short','long')][string]$Flash = 'long',
+        [double]$TransitionSec = 0.3
     )
+    # transition: firmware defaults to a 0ms instant snap otherwise — a
+    # short fade reads as noticeably more polished for near-zero cost.
+    # Flash defaults to 'long' (existing notification behavior unchanged);
+    # callers doing lightweight cycle-select feedback can pass -Flash short
+    # to distinguish "just browsing" from "needs your attention".
     if ($Off) {
-        Invoke-HaService -Connection $Connection -Domain light -Service turn_off -Body @{ entity_id = $script:LedEntity }
+        Invoke-HaService -Connection $Connection -Domain light -Service turn_off -Body @{
+            entity_id  = $script:LedEntity
+            transition = $TransitionSec
+        }
         return
     }
     $body = @{ entity_id = $script:LedEntity; rgb_color = $script:AccountColors[$Account]; brightness = 180 }
-    if ($Pulse) { $body['flash'] = 'long' }
+    if ($Pulse) {
+        $body['flash'] = $Flash
+    } else {
+        $body['transition'] = $TransitionSec
+    }
     Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body $body
 }
 
