@@ -42,12 +42,13 @@ function Invoke-HaService {
         [Parameter(Mandatory)][hashtable]$Connection,
         [Parameter(Mandatory)][string]$Domain,
         [Parameter(Mandatory)][string]$Service,
-        [Parameter(Mandatory)][hashtable]$Body
+        [Parameter(Mandatory)][hashtable]$Body,
+        [int]$TimeoutSec = 2
     )
     try {
         Invoke-RestMethod -Uri "$($Connection.Url)/api/services/$Domain/$Service" `
             -Method POST -Headers $Connection.Headers `
-            -Body ($Body | ConvertTo-Json -Depth 5) -TimeoutSec 2 | Out-Null
+            -Body ($Body | ConvertTo-Json -Depth 5) -TimeoutSec $TimeoutSec | Out-Null
         return $true
     } catch {
         Write-Warning "HA service call $Domain.$Service failed: $_"
@@ -105,10 +106,13 @@ function Invoke-HaChime {
 
 function Invoke-HaAnnounce {
     param([Parameter(Mandatory)][hashtable]$Connection, [Parameter(Mandatory)][string]$Text)
+    # 10s, not the default 2s: assist_satellite.announce legitimately takes
+    # a few seconds for real TTS generation — confirmed empirically that a
+    # 2s timeout reports failure even though the device successfully spoke.
     Invoke-HaService -Connection $Connection -Domain assist_satellite -Service announce -Body @{
         entity_id = $script:SatelliteEntity
         message   = $Text
-    }
+    } -TimeoutSec 10
 }
 
 Export-ModuleMember -Function Get-HaConnection, Invoke-HaService, Get-HaState, Test-HaMuted, Test-HaNotificationsEnabled, Invoke-HaLed, Invoke-HaChime, Invoke-HaAnnounce
