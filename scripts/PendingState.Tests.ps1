@@ -41,4 +41,36 @@ Describe 'PendingState' {
         Clear-PendingAccount -Account 'personal'
         (Get-PendingState).cursor | Should -Be 'work'
     }
+
+    It 'throws when unable to acquire lock within timeout' {
+        # Start a background job to hold the mutex
+        $lockJob = Start-Job -ScriptBlock {
+            $mutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeVoicePendingState')
+            $acquired = $mutex.WaitOne(5000)
+            if ($acquired) {
+                # Hold the lock for 10 seconds
+                Start-Sleep -Seconds 10
+                $mutex.ReleaseMutex()
+            }
+        }
+
+        # Give the job time to acquire the lock
+        Start-Sleep -Milliseconds 200
+
+        $errorThrown = $false
+        $errorMessage = ''
+        try {
+            Set-PendingAccount -Account 'test' -Project 'p' -Message 'm'
+        } catch {
+            $errorThrown = $true
+            $errorMessage = $_.Exception.Message
+        }
+
+        # Clean up the job
+        Stop-Job -Job $lockJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $lockJob -ErrorAction SilentlyContinue
+
+        $errorThrown | Should -Be $true
+        $errorMessage | Should -Match 'Timed out'
+    }
 }

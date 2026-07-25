@@ -27,11 +27,17 @@ function Save-PendingState {
 function Invoke-WithPendingStateLock {
     param([scriptblock]$Body)
     $mutex = New-Object System.Threading.Mutex($false, $script:MutexName)
+    $acquired = $false
     try {
-        $mutex.WaitOne(5000) | Out-Null
+        if (-not $mutex.WaitOne(5000)) {
+            throw "Timed out waiting for pending-state lock"
+        }
+        $acquired = $true
         & $Body
     } finally {
-        $mutex.ReleaseMutex()
+        if ($acquired) {
+            $mutex.ReleaseMutex()
+        }
     }
 }
 
