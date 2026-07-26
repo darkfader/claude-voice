@@ -85,7 +85,15 @@ function Invoke-HaLed {
         [int]$Brightness = 255,
         [switch]$Flash,
         [switch]$Off,
-        [double]$TransitionSec = 0.3
+        [double]$TransitionSec = 0.3,
+        # Gap between setting the solid colour and firing the one-shot flash.
+        # NOT optional padding: flash restores the light to the state it
+        # captured when it fired, so without a gap it can capture the state
+        # from BEFORE the solid set -- i.e. darkness -- and the ring goes
+        # dark ~10s later, silently losing the notification. Verified live:
+        # with no gap and the ring starting off, dark at t+16s; with this
+        # gap, green held at t+1/5/10/16s.
+        [int]$FlashDelayMs = 800
     )
     # -Flash is a ONE-SHOT attention grab on arrival, not a state. It runs for
     # a fixed ~10s and then reverts the light to its PREVIOUS state (verified
@@ -109,6 +117,10 @@ function Invoke-HaLed {
     $ok = Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body $body
 
     if ($Flash -and $ok) {
+        # See $FlashDelayMs above: without this gap, flash can capture and
+        # restore to the state that preceded this solid-colour call instead
+        # of the solid colour itself.
+        Start-Sleep -Milliseconds $FlashDelayMs
         # Separate call, deliberately after the solid set: the flash reverts
         # to whatever preceded it, which is now the solid colour we want.
         Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body @{
