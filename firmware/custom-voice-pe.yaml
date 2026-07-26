@@ -1,0 +1,11 @@
+# Buildable entry point for the customized Home Assistant Voice PE firmware.
+#
+# Packages the unmodified upstream stock factory config together with our
+# overlay (additional "Hey Claude" wake word + exposing the dial's rotation
+# sensor to Home Assistant). home-assistant-voice.factory.yaml is the real
+# top-level buildable stock target (confirmed in Task 1) — the plain
+# home-assistant-voice.yaml is a package fragment missing wifi SSID/AP and
+# esp32_improv/improv_serial, and cannot compile standalone.
+packages:
+  upstream: !include home-assistant-voice-pe/home-assistant-voice.factory.yaml
+  overlay: !include overlay.yaml

@@ -1,0 +1,35 @@
+# Overlay merged on top of the stock home-assistant-voice.factory.yaml
+# config via custom-voice-pe.yaml's `packages:`.
+#
+# 1. Adds "Hey Claude" as an additional micro_wake_word model. ESPHome's
+#    packages merge concatenates list values by default (old + new), so a
+#    plain new list entry here is *additive* — the stock wake words (Okay
+#    Nabu, Hey Jarvis, Hey Mycroft) defined upstream are untouched. Note:
+#    this entry deliberately does NOT use `!extend` — `!extend` only makes
+#    sense when merging onto an *existing* id, and `hey_claude` has no
+#    existing entry to extend (ESPHome would raise "Source for extension of
+#    ID 'hey_claude' was not found"). The local `model:` path must point at
+#    the .json manifest (ESPHome's local-model validator requires a
+#    filename ending in .json), not the .tflite directly — the manifest's
+#    own "model" field ("hey_claude.tflite") is what actually points at the
+#    tflite file, resolved relative to the manifest's directory.
+#
+# 2. Exposes the dial's rotation to Home Assistant by adding a `name:` to
+#    the existing (upstream, internal-only) rotary_encoder sensor. This uses
+#    ESPHome's real `!extend` merge syntax: the tag goes on the *value of
+#    the id: field* of the list item (`id: !extend dial`), not on the
+#    `sensor:` list key itself. At merge time ESPHome finds the upstream
+#    list entry whose literal id is "dial" and deep-merges this item's
+#    remaining fields onto it — so only `name:` is added; pins, resolution,
+#    and the on_clockwise/on_anticlockwise scripts are left byte-identical
+#    to upstream.
+micro_wake_word:
+  models:
+    - model: models/hey_claude.json
+      id: hey_claude
+      probability_cutoff: 0.9
+      sliding_window_size: 5
+
+sensor:
+  - id: !extend dial
+    name: "Dial Rotation"
