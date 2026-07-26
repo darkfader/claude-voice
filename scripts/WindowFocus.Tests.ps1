@@ -1,35 +1,33 @@
-BeforeAll {
-    Import-Module "$PSScriptRoot/WindowFocus.psm1" -Force
-}
+BeforeAll { Import-Module "$PSScriptRoot/WindowFocus.psm1" -Force }
 
-Describe 'Get-AccountWindowPattern' {
-    It 'returns the personal workspace pattern' {
-        Get-AccountWindowPattern -Account 'personal' | Should -BeLike '*HomeAssistant*'
-    }
-    It 'returns the work workspace pattern' {
-        Get-AccountWindowPattern -Account 'work' | Should -BeLike '*sownet*'
+Describe 'Get-ProjectWindowPattern' {
+    It 'builds a VS Code title pattern from the project name' {
+        Get-ProjectWindowPattern -Project 'HomeAssistant' | Should -Be '*HomeAssistant*Visual Studio Code*'
     }
 }
 
-Describe 'Find-AccountWindow' {
-    It 'finds the process whose title matches the account pattern' {
+Describe 'Find-SessionWindow' {
+    It 'finds the window whose title contains the project name' {
         $procs = @(
-            [PSCustomObject]@{ MainWindowTitle = 'foo.txt - HomeAssistant - Visual Studio Code'; MainWindowHandle = [IntPtr]1; Id = 100 },
-            [PSCustomObject]@{ MainWindowTitle = 'bar.txt - sownet-app - Visual Studio Code'; MainWindowHandle = [IntPtr]2; Id = 200 }
+            [PSCustomObject]@{ MainWindowTitle = 'a.ps1 - HomeAssistant - Visual Studio Code'; MainWindowHandle = [IntPtr]1; Id = 100 },
+            [PSCustomObject]@{ MainWindowTitle = 'b.ts - other-repo - Visual Studio Code';     MainWindowHandle = [IntPtr]2; Id = 200 }
         )
-        (Find-AccountWindow -Account 'personal' -Processes $procs).Id | Should -Be 100
-        (Find-AccountWindow -Account 'work' -Processes $procs).Id | Should -Be 200
+        (Find-SessionWindow -Project 'HomeAssistant' -Processes $procs).Id | Should -Be 100
+        (Find-SessionWindow -Project 'other-repo'   -Processes $procs).Id | Should -Be 200
     }
 
     It 'ignores windows with no handle' {
-        $procs = @(
-            [PSCustomObject]@{ MainWindowTitle = 'HomeAssistant - Visual Studio Code'; MainWindowHandle = [IntPtr]0; Id = 100 }
-        )
-        Find-AccountWindow -Account 'personal' -Processes $procs | Should -BeNullOrEmpty
+        $procs = @([PSCustomObject]@{ MainWindowTitle = 'HomeAssistant - Visual Studio Code'; MainWindowHandle = [IntPtr]0; Id = 1 })
+        Find-SessionWindow -Project 'HomeAssistant' -Processes $procs | Should -BeNullOrEmpty
     }
 
-    It 'returns $null when nothing matches' {
+    It 'returns null when nothing matches' {
         $procs = @([PSCustomObject]@{ MainWindowTitle = 'unrelated'; MainWindowHandle = [IntPtr]1; Id = 1 })
-        Find-AccountWindow -Account 'personal' -Processes $procs | Should -BeNullOrEmpty
+        Find-SessionWindow -Project 'HomeAssistant' -Processes $procs | Should -BeNullOrEmpty
+    }
+
+    It 'does not match a non-VS-Code window that happens to contain the project name' {
+        $procs = @([PSCustomObject]@{ MainWindowTitle = 'HomeAssistant - Notepad'; MainWindowHandle = [IntPtr]1; Id = 1 })
+        Find-SessionWindow -Project 'HomeAssistant' -Processes $procs | Should -BeNullOrEmpty
     }
 }

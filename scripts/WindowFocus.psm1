@@ -1,22 +1,21 @@
-$script:AccountWindowPatterns = @{
-    personal = '*HomeAssistant*Visual Studio Code*'
-    work     = '*sownet*Visual Studio Code*'
+# Derived from the session's own project rather than a hardcoded per-account
+# pattern, which is both more accurate and means adding a project needs no
+# code change. Known limit: two sessions in the SAME folder resolve to the
+# same window and cannot be told apart for focusing.
+function Get-ProjectWindowPattern {
+    param([Parameter(Mandatory)][string]$Project)
+    "*$Project*Visual Studio Code*"
 }
 
-function Get-AccountWindowPattern {
-    param([Parameter(Mandatory)][ValidateSet('personal','work')][string]$Account)
-    $script:AccountWindowPatterns[$Account]
-}
-
-function Find-AccountWindow {
+function Find-SessionWindow {
     param(
-        [Parameter(Mandatory)][ValidateSet('personal','work')][string]$Account,
+        [Parameter(Mandatory)][string]$Project,
         [Parameter(Mandatory)]$Processes
     )
-    $pattern = Get-AccountWindowPattern -Account $Account
+    $pattern = Get-ProjectWindowPattern -Project $Project
     $Processes |
         Where-Object { $_.MainWindowHandle -ne [IntPtr]0 -and $_.MainWindowTitle -like $pattern } |
         Select-Object -First 1
 }
 
-Export-ModuleMember -Function Get-AccountWindowPattern, Find-AccountWindow
+Export-ModuleMember -Function Get-ProjectWindowPattern, Find-SessionWindow
