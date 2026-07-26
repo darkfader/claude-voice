@@ -26,7 +26,7 @@ Describe 'Get-ButtonAction' {
     It 'long_press with a selected cursor confirms that account' {
         $pending = @{ personal = @{} }
         $a = Get-ButtonAction -EventType 'long_press' -PendingAccounts $pending -Cursor 'personal'
-        $a.Action | Should -Be 'confirm'
+        $a.Action | Should -Be 'focus'
         $a.Account | Should -Be 'personal'
     }
 
@@ -41,7 +41,7 @@ Describe 'Get-ButtonAction' {
 
     It 'long_press with no cursor but exactly one pending account confirms that account' {
         $a = Get-ButtonAction -EventType 'long_press' -PendingAccounts @{ personal = @{} } -Cursor $null
-        $a.Action | Should -Be 'confirm'
+        $a.Action | Should -Be 'focus'
         $a.Account | Should -Be 'personal'
     }
 

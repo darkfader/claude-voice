@@ -40,7 +40,11 @@ function Get-ButtonAction {
             if (-not $effectiveCursor -or $names -notcontains $effectiveCursor) {
                 return @{ Action = 'none'; Account = $null; Speak = 'Nothing selected' }
             }
-            return @{ Action = 'confirm'; Account = $effectiveCursor; Speak = $null }
+            # 'focus', not 'confirm': long-press takes you TO the session and
+            # clears the light -- it deliberately does not answer for you. The
+            # Notification hook fires mainly on permission prompts, so replying
+            # unseen from across the room is the one thing this shouldn't do.
+            return @{ Action = 'focus'; Account = $effectiveCursor; Speak = $null }
         }
         'triple_press' {
             $effectiveCursor = $Cursor

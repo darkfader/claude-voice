@@ -128,8 +128,13 @@ function Invoke-ButtonEvent {
             if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection }
             else { Invoke-HaAnnounce -Connection $Connection -Text $result.Speak }
         }
-        'confirm' {
-            & (Join-Path $PSScriptRoot 'confirm-session.ps1') -Account $result.Account
+        'focus' {
+            # -FocusOnly: take the human to the session and clear the light,
+            # but type nothing. The Notification hook fires mainly on
+            # permission prompts, so auto-answering from across the room would
+            # approve things unseen. Deliberate replies happen at the desk
+            # (e.g. the optional Stream Controller page), not from the device.
+            & (Join-Path $PSScriptRoot 'confirm-session.ps1') -Account $result.Account -FocusOnly
             if ($LASTEXITCODE -ne 0) {
                 Invoke-HaAnnounce -Connection $Connection -Text "Couldn't find the $($result.Account) session"
                 Invoke-HaLed -Connection $Connection -Account $result.Account -Pulse
