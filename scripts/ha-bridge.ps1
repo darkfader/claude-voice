@@ -61,6 +61,21 @@ function Set-RemainingLed {
     }
 }
 
+function Invoke-DialRotationEvent {
+    param([Parameter(Mandatory)][hashtable]$Connection)
+
+    if (-not (Test-HaNotificationsEnabled -Connection $Connection)) { return }
+
+    $state = Get-PendingState
+    $next = Get-DialCycleTarget -PendingAccounts $state.accounts -Cursor $state.cursor
+    if (-not $next) { return }
+
+    Set-PendingCursor -Account $next
+    Invoke-HaLed -Connection $Connection -Account $next -Pulse
+    if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection }
+    else { Invoke-HaAnnounce -Connection $Connection -Text "$next selected" }
+}
+
 function Invoke-ButtonEvent {
     param([Parameter(Mandatory)][hashtable]$Connection, [Parameter(Mandatory)][string]$EventType)
 
@@ -123,6 +138,12 @@ while ($true) {
                     } catch {
                         Write-BridgeLog "Invoke-ButtonEvent failed (continuing): $_"
                     }
+                }
+            } elseif ($data.entity_id -eq 'sensor.bedroom_home_assistant_voice_0932b4_dial_rotation') {
+                try {
+                    Invoke-DialRotationEvent -Connection $conn
+                } catch {
+                    Write-BridgeLog "Invoke-DialRotationEvent failed (continuing): $_"
                 }
             }
         }

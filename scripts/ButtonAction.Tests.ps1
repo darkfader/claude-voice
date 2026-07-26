@@ -62,3 +62,27 @@ Describe 'Get-ButtonAction' {
         $a.Action | Should -Be 'none'
     }
 }
+
+Describe 'Get-DialCycleTarget' {
+    It 'advances from no cursor to the first account alphabetically' {
+        Get-DialCycleTarget -PendingAccounts @{ work = @{}; personal = @{} } -Cursor $null | Should -Be 'personal'
+    }
+
+    It 'wraps around from the last account to the first' {
+        Get-DialCycleTarget -PendingAccounts @{ work = @{}; personal = @{} } -Cursor 'work' | Should -Be 'personal'
+    }
+
+    It 'returns $null when nothing is pending' {
+        Get-DialCycleTarget -PendingAccounts @{} -Cursor $null | Should -BeNullOrEmpty
+    }
+
+    It 'advances through the middle of a three-account list' {
+        $pending = @{ alpha = @{}; bravo = @{}; charlie = @{} }
+        Get-DialCycleTarget -PendingAccounts $pending -Cursor 'alpha' | Should -Be 'bravo'
+    }
+
+    It 'treats a stale cursor (no longer pending) as if starting from the top' {
+        $pending = @{ work = @{}; personal = @{} }
+        Get-DialCycleTarget -PendingAccounts $pending -Cursor 'someone-else' | Should -Be 'personal'
+    }
+}

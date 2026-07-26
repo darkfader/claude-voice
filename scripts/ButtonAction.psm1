@@ -1,4 +1,15 @@
 # claude-voice/scripts/ButtonAction.psm1
+function Get-DialCycleTarget {
+    param(
+        [Parameter(Mandatory)][hashtable]$PendingAccounts,
+        [string]$Cursor
+    )
+    $names = @($PendingAccounts.Keys | Sort-Object)
+    if ($names.Count -eq 0) { return $null }
+    $idx = [array]::IndexOf($names, $Cursor)
+    $names[($idx + 1) % $names.Count]
+}
+
 function Get-ButtonAction {
     param(
         [Parameter(Mandatory)][ValidateSet('double_press','long_press','triple_press','easter_egg_press')]
@@ -18,8 +29,7 @@ function Get-ButtonAction {
 
     switch ($EventType) {
         'double_press' {
-            $idx = [array]::IndexOf($names, $Cursor)
-            $next = $names[($idx + 1) % $names.Count]
+            $next = Get-DialCycleTarget -PendingAccounts $PendingAccounts -Cursor $Cursor
             return @{ Action = 'select'; Account = $next; Speak = "$next selected" }
         }
         'long_press' {
@@ -45,4 +55,4 @@ function Get-ButtonAction {
     }
 }
 
-Export-ModuleMember -Function Get-ButtonAction
+Export-ModuleMember -Function Get-ButtonAction, Get-DialCycleTarget
