@@ -19,16 +19,67 @@ running — that's the first thing to check, not a bug.
 
 ## What you'll see and hear
 
+**Colour says *which session*. Brightness says *what state*.** A session's
+colour comes from a hash of its project's path (see
+[`home-assistant-voice-device.md`](home-assistant-voice-device.md) for the
+mechanics), so the same project shows the same colour every time, including
+after a restart — and when two or more sessions are pending at once, their
+colours are automatically nudged apart so they're never confused for each
+other.
+
 | When | LED ring | Sound |
 |---|---|---|
-| Session needs your input | Pulses in that account's colour — **blue** = personal, **purple** = work | Speaks: *"personal session needs input: &lt;message&gt;"* |
-| Session finished | Solid in that account's colour | Chime |
-| You replied (typed or via the device) | Off | — |
-| Cycling with the dial | Pulses in the newly-selected account's colour | Silent (chime only if muted) |
+| A session needs your input, nothing else pending | **Solid, full brightness**, that session's colour, one flash on arrival | Speaks: *"&lt;project&gt; needs input: &lt;message&gt;"* |
+| A session needs your input, something else already pending | Unchanged — the ring is **not** touched | Chime only |
+| A session finishes its turn, nothing else pending | Solid, **dim**, that session's colour | Chime |
+| You reply (typed or via the device), nothing else pending | Solid, dim, that session's colour — the ambient "you're working here" marker | — |
+| Cycling with the dial or double-press | Solid, full brightness, the newly-selected session's colour | Speaks its name (chime only if muted) |
+| Nothing pending, idle 10+ minutes | Off | — |
 
-**LED off means nothing is pending.** That is the normal resting state — and
-it's what you'll see most of the time while actively typing to Claude, because
-sending a prompt clears the pending state immediately.
+### It holds SOLID — it never pulses
+
+A pending session lights the ring **solid** and leaves it there the entire
+time it's waiting on you, with a single flash right on arrival to catch your
+eye. That flash is a one-shot: this hardware's `flash: short` runs for about
+10 seconds and then reverts to whatever the ring was already showing — which
+is why "pulsing" is never an accurate description of a waiting session here.
+There's no ongoing animation, just solid-and-held. Confirmed live: still lit,
+unchanged, 15+ seconds after a notification arrives.
+
+### A second notification while one is pending chimes — nothing moves
+
+If a session lights the ring and a *different* session then also needs
+input, the second one plays the chime and **stops there** — the ring keeps
+showing the first session, untouched. This is deliberate, not a bug: you're
+already looking at (or about to look at) whatever's on the ring, and having
+it change colour out from under you mid-decision would be actively
+unhelpful. `Get-Content claude-voice/state/pending.json` (below) always shows
+everything that's actually waiting, ring or no ring.
+
+### The ambient indicator fades on its own
+
+Once nothing is pending, the ring doesn't necessarily jump straight to off.
+Whichever session you most recently typed into, or that most recently
+finished a turn, keeps a **dim** solid glow — a "you were last working here"
+marker, nothing that needs action. `ha-bridge.ps1` checks about once a
+minute and switches it off once that session has sat idle for **10 minutes**
+with nothing pending.
+
+### Subagent completions do not notify
+
+A Claude Code session can spawn subagents — sometimes dozens of them in a
+single turn. Claude Code has a `SubagentStop` hook event for exactly that
+moment, and it is **deliberately not wired up** here. None of those
+completions are moments that need you; only three events are hooked, in
+`.claude/settings.json`:
+
+- `Notification` — something needs you (a permission prompt, or Claude idle
+  waiting on input)
+- `Stop` — your turn finished
+- `UserPromptSubmit` — you just replied
+
+Wiring `SubagentStop` too would mean a single busy session lighting up the
+device dozens of times for things that were never yours to act on.
 
 ### The mute slider is a "don't talk to me" switch
 
@@ -42,10 +93,10 @@ Once the bridge is running:
 
 | Gesture | Action |
 |---|---|
-| **Double-press** | Cycle to the next pending account (speaks its name) |
-| **Long-press** | Send `continue` to the selected session — focuses its VS Code window and types it |
-| **Triple-press** | Dismiss the selected account without replying |
-| **Rotate the dial** | Cycle accounts — but only when **2 or more** are pending |
+| **Double-press** | Cycle to the next pending session, oldest-arrived first (speaks its name) |
+| **Long-press** | Jump to the selected session — focuses its VS Code window and clears its pending light. Types **nothing**; you read and reply yourself |
+| **Triple-press** | Dismiss the selected session without replying |
+| **Rotate the dial** | Same cycling as double-press — but only when **2 or more** sessions are pending |
 
 Long-press works with no prior press when exactly one session is pending —
 there's only one thing it could mean.
@@ -143,6 +194,6 @@ won't appear in the app.
 | Nothing happens at all | Kill switch off (`input_boolean.claude_notifications_enabled`), or the helper was never created — README Step 1 |
 | Warning: *"Entity not found: input_boolean.claude_notifications_enabled"* | Same — the helper doesn't exist yet. Harmless: the code deliberately fails open and still notifies. |
 | Device speaks but plays no chime | `chime.wav` never reached HA's media folder — README Step 2 |
-| It says the wrong account name | Each project's `.claude/settings.json` hardcodes `-Account`; check that repo's hooks |
+| It names the wrong project | Display name comes from the last path segment of the hook payload's `cwd`; an unusual folder name or symlink can produce something unexpected |
 | Dial cycles when you only wanted volume | Only possible with 2+ sessions pending; resolve or dismiss one |
 | "Hey Claude" triggers by accident | Its sensitivity is fixed at flash time and **not** adjustable by the device's sensitivity control — see [`home-assistant-voice-device.md`](home-assistant-voice-device.md) |

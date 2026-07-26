@@ -87,12 +87,12 @@ for the full design rationale.
     non-numeric states (`unknown`/`unavailable`) as well as numbers, which
     `ha-bridge.ps1` must and does guard against (see below).
   - **`ha-bridge.ps1` only ever acts on this sensor's rotation when 2+
-    Claude Code accounts are pending** (final review, Plan 2) — the
+    Claude Code sessions are pending** (final review, Plan 2) — the
     specific case the dial-cycling feature exists for. With 0 or 1
-    accounts pending, i.e. every ordinary day, rotating the dial does
+    sessions pending, i.e. every ordinary day, rotating the dial does
     nothing beyond its stock volume/hue behavior; the bridge doesn't touch
     the cursor, LED, or state at all. See "Control surfaces" below for the
-    full behavior once 2+ accounts are pending.
+    full behavior once 2+ sessions are pending.
   - The center-button click IS exposed, as part of the same button-press
     event entity below (best guess — the "center button" binary_sensor
     referenced in the volume-control lambda is very likely the same
@@ -122,13 +122,15 @@ for the full design rationale.
 - The firmware has internal per-LED chase/animation lambdas (a loading-bar
   chase, symmetric "jack plugged/unplugged" animations) but these are
   hardcoded to specific device states, not exposed as a selectable effect.
-- `flash: short` and `flash: long` are both available (this project
-  currently only uses `long`). `transition` (smooth fade) is available but
-  unused — firmware defaults to a 0ms instant snap unless a transition is
-  explicitly requested in the service call.
+- `flash: short` and `flash: long` are both available; this project uses
+  `short`, empirically a one-shot of about 10 seconds (see "Notification
+  behavior" below for why the ordering of the solid-color call and the
+  flash call around it matters). `transition` (smooth fade) is available
+  but unused — firmware defaults to a 0ms instant snap unless a transition
+  is explicitly requested in the service call.
 - **Not currently possible without custom firmware**: showing two colors
-  at once (e.g. half-ring blue / half-ring purple for two simultaneously
-  pending accounts) — would need exposing the two 6-LED halves as separate
+  at once (e.g. half-ring in each of two simultaneously-pending sessions'
+  own colors) — would need exposing the two 6-LED halves as separate
   entities, same class of firmware work as the dial-rotation exposure.
 
 ### Speaker / media player
@@ -152,16 +154,54 @@ for the full design rationale.
 
 ### Notification behavior (Claude Code session → device)
 
-- **Task finishes** (`Stop` hook): LED solid in the account's color, chime
-  only, no speech — a finished task doesn't need narrating.
-- **Needs input** (`Notification` hook): LED pulsing in the account's
-  color, chime, AND spoken summary naming the account and the message —
-  unless quiet submode is active (below), in which case just the chime.
+- **Task finishes** (`Stop` hook), nothing else pending: LED solid **dim**
+  in the session's color, chime only, no speech — a finished task doesn't
+  need narrating. If another session is already pending, the ring is left
+  alone entirely — a finished task must never take the ring away from one
+  that still needs the human.
+- **Needs input** (`Notification` hook), nothing else pending: LED
+  full-brightness **solid** in the session's color, with a single one-shot
+  flash on arrival to catch the eye, chime, AND spoken summary naming the
+  session and the message — unless quiet submode is active (below), in
+  which case just the chime. If another session is already pending, only
+  the chime plays and the ring is **not** touched — see "Second
+  notification while one is pending" below.
 - **Resolved** (`UserPromptSubmit` hook — fires whether the reply was
-  typed by hand or injected by a control surface): LED off.
-- Per-account LED colors: **personal = `[0,120,255]` (blue)**, **work =
-  `[160,32,240]` (purple)**. Used both for notify-state color and as the
-  visual "who's selected" indicator while cycling.
+  typed by hand or injected by a control surface), nothing else pending:
+  LED becomes the **dim** ambient "you're working here" indicator in the
+  session's color — deliberately **not** turned off. Only the 10-minute
+  idle-fade check in `ha-bridge.ps1` (`Invoke-IdleCheck`) turns it off,
+  and only once nothing is pending. Turning it off here instead would mean
+  the ambient indicator never showed at all.
+- **Solid, never pulsing.** `flash: short` on this hardware is a one-shot
+  effect (~10s) that reverts the light to whatever it was showing right
+  before the flash fired — not to "off". `Invoke-HaLed` in `HaClient.psm1`
+  always sets the solid color *first* and only fires the flash ~800ms
+  later (`$FlashDelayMs`), specifically so the flash has something correct
+  to revert to. Verified live: with that gap, the ring held its color at
+  t+1/5/10/16s; without it, the ring went dark at t+16s (it had captured
+  and reverted to the pre-solid "off" state instead). A sustained pulse
+  isn't achievable on this hardware without fighting the firmware, so the
+  UI never claims one — the ring holds solid for as long as it's pending.
+- **Second notification while one is pending**: chimes only, ring
+  untouched. This is `Get-NotifyPlan`'s `OtherPendingCount -gt 0` branch —
+  it exists so a second arrival can't steal the ring out from under a
+  decision already in progress on the first one.
+- **Per-session LED colors, not per-account.** `SessionColor.psm1` derives
+  a color from a SHA256 hash (not `.NET`'s `GetHashCode`, which is
+  randomized per process and would give a different color every run) of
+  the session's *normalized project path*, quantized into 16 hues at full
+  saturation/value (`ConvertFrom-HueSlot`). This makes a project's color:
+  (a) **stable across restarts** — same path hashes to the same preferred
+  slot every time — and (b) not a hardcoded per-account constant, so a
+  brand-new project needs zero code changes to get a distinct color. If
+  two sessions are pending simultaneously and their preferred hues would
+  collide, `Resolve-SessionColorSlot` nudges the second to the next free
+  slot (linear probe over the 16 slots) so two sessions pending at once
+  are never color-identical — this includes two sessions in the *same*
+  project, which also get an ordinal suffix on their spoken/display name
+  (`Get-SessionDisplayName`, e.g. `HomeAssistant` then `HomeAssistant 2`)
+  since color alone isn't a legible way to tell them apart out loud.
 - Kill switch: `input_boolean.claude_notifications_enabled` — every
   notify/control action checks this first and no-ops if off. (Helper
   entities like this can't be created via HA's REST API — no endpoint
@@ -174,34 +214,45 @@ for the full design rationale.
   slider).
 - Spoken output is suppressed entirely. The chime still plays — audio
   isn't fully off, just narration.
-- LED behavior is unchanged (it was already carrying the account/status
-  info independent of mute state).
+- LED behavior is unchanged (it was already carrying the
+  which-session/what-state info independent of mute state).
 - Button/dial control keeps working fully — the actual point of quiet
   submode is full session control with zero spoken output.
 - Mode 2 (wake words) needs no special handling — mic is physically off,
   wake-word detection is already impossible.
-- Dial-cycling (below) never speaks an account name regardless of mute
-  state (final review, Fix 3) — mute only continues to matter for the
-  `double_press` button fallback, which still suppresses its spoken
-  account name when muted, same as before.
+- Dial-cycling and `double_press` both speak the newly-selected session's
+  name via TTS when unmuted, and chime instead of speaking when muted
+  (`Invoke-DialRotationEvent` / the `select` branch of `Invoke-ButtonEvent`
+  in `ha-bridge.ps1`) — the two surfaces behave identically here. (Plan 2's
+  final review originally made dial-cycling LED-only with no spoken name
+  at all, to avoid queuing overlapping announce calls across rapid
+  detents; the debounce added at the same time — see below — made a
+  spoken name safe to add back, since a whole gesture now collapses into
+  one action instead of one call per detent.)
 
 ### Control surfaces (device → Claude Code session)
 
 - **Primary, now that Mode 2 firmware is built and flashed**: rotate the
-  dial to cycle through pending accounts, long-press (center-button click)
-  to confirm/send a reply, triple-press to dismiss without responding.
-  Two important corrections from the original design, both added after
-  Plan 2's final review:
-  - **Gated to 2+ pending accounts.** The dial has always controlled
+  dial to cycle through pending sessions, long-press (center-button click)
+  to jump to the selected session, triple-press to dismiss without
+  responding. Long-press is deliberately **"focus", not "confirm"** — it
+  brings the session's VS Code window to the front and clears its pending
+  light, but types nothing (`confirm-session.ps1 -FocusOnly`). The
+  `Notification` hook fires mainly on permission prompts, so auto-sending a
+  reply from across the room would mean approving something unseen; a
+  deliberate typed reply happens at the desk instead (by hand, or via the
+  optional Stream Controller page below). Two important corrections from
+  the original design, both added after Plan 2's final review:
+  - **Gated to 2+ pending sessions.** The dial has always controlled
     speaker volume (rotate alone) and LED-ring hue (rotate while holding
     the center button) — that's its normal, everyday behavior, and every
     rotation fires this same HA sensor regardless of intent.
-    `ha-bridge.ps1`'s dial-cycling code only ever acts when 2+ accounts are
+    `ha-bridge.ps1`'s dial-cycling code only ever acts when 2+ sessions are
     actually pending (the specific case it exists for); with 0 or 1
     pending, ordinary volume/hue turns are completely unaffected — no
     cursor mutation, no LED call, no sound. This also incidentally fixed a
-    bug where, with exactly 1 account pending, the old code re-announced
-    that account's name on every single detent forever.
+    bug where, with exactly 1 session pending, the old code re-announced
+    that session's name on every single detent forever.
   - **LED update is not actually live.** The design originally promised the
     LED updates "immediately, live, as you turn it." That isn't achievable
     given the current firmware: the stock `control_leds` lambda treats the
@@ -210,20 +261,27 @@ for the full design rationale.
     effect during that window, overwriting our LED call almost
     immediately. The update only becomes visible once that window elapses.
     Rapid detents from a single physical turn are also debounced into one
-    action (~800ms), with LED-only feedback — no per-detent spoken account
-    name (the previous per-detent TTS could otherwise queue up many
-    overlapping 10-second announce calls and stall the bridge's event loop
-    for a long time).
+    action (~800ms) — one LED update and one spoken name **per gesture**,
+    not per detent (an earlier version spoke on every single detent, which
+    could queue up many overlapping 10-second announce calls and stall the
+    bridge's event loop for a long time).
+  - Cycling order is **arrival order (oldest-pending first)**, from
+    `Get-DialCycleTarget` sorting sessions by their `since` timestamp — not
+    alphabetical. Session ids are random, so sorting by name would produce
+    a meaningless rotation; sorting by arrival time is the one order a
+    human can actually predict.
 - **Fallback, stock firmware, always available**: `double_press`
-  substitutes for dial rotation (same cursor, spoken account name via TTS
-  since there's no working live LED preview during rotation to key off of
-  — see above). `long_press`/`triple_press` behave identically either way.
-  Both surfaces are live simultaneously now — `double_press` isn't a
-  stopgap waiting on firmware, it's a standing alternative.
+  substitutes for dial rotation — same cursor, same arrival-order cycling,
+  same spoken session name via TTS (there's no working live LED preview
+  during rotation to key off of instead — see above, and both surfaces
+  speak identically regardless). `long_press`/`triple_press` behave
+  identically either way. Both surfaces are live simultaneously now —
+  `double_press` isn't a stopgap waiting on firmware, it's a standing
+  alternative.
 - **Optional, richer**: a Stream Controller ("Soomfon", StreamDock/HotSpot
   platform) macro deck already on this PC, with native plugins for HA
   control, VS Code terminal injection, and window-focus/switch-to — a
-  "Claude" page there can do direct per-account approve buttons with zero
+  "Claude" page there can do direct per-project approve buttons with zero
   code in this repo. Fully optional; the device's own button/dial keeps
   working without it.
 - Chosen over: HA Voice's own on-device custom-wake-word-triggered voice
