@@ -1,16 +1,68 @@
 # claude-voice
 
-Claude Code ↔ Home Assistant Voice integration. See
-`docs/superpowers/specs/2026-07-25-ha-voice-claude-integration-design.md`
-for the full design.
+Claude Code ↔ Home Assistant Voice integration.
+
+- **Using it day to day → [`docs/user-guide.md`](docs/user-guide.md)** — what
+  the lights and sounds mean, the button/dial controls, and how to see what
+  happened.
+- Installing it → this file.
+- Hardware facts and UX decisions → [`docs/home-assistant-voice-device.md`](docs/home-assistant-voice-device.md).
+- Full design rationale →
+  `docs/superpowers/specs/2026-07-25-ha-voice-claude-integration-design.md`.
 
 ## Components
-- `scripts/PendingState.psm1` — tracks which accounts are waiting on input.
-- `scripts/HaClient.psm1` — thin wrapper around the HA REST API.
-- `scripts/notify-ha.ps1` — called by Claude Code hooks.
+
+Pure logic (no I/O, fully unit-tested — these hold the decision-making):
+- `scripts/NotifyPlan.psm1` — `Get-NotifyPlan`: given an event, account and
+  mute state, decides what the LED, sound and speech should be.
+- `scripts/ButtonAction.psm1` — `Get-ButtonAction` / `Get-DialCycleTarget`:
+  decides what a button press or dial turn should do, given what's pending.
+- `scripts/WindowFocus.psm1` — `Get-AccountWindowPattern` /
+  `Find-AccountWindow`: maps an account to its VS Code window.
+
+I/O and side effects (verified live rather than unit-tested, since they talk
+to hardware, HTTP and the Windows desktop):
+- `scripts/HaClient.psm1` — thin wrapper around the HA REST API. Single source
+  of HA credentials via `Get-HaConnection` (see Step 0).
+- `scripts/PendingState.psm1` — tracks which accounts are waiting on input,
+  in `state/pending.json`, serialised across concurrent hook processes by a
+  named mutex.
+- `scripts/notify-ha.ps1` — the entry point Claude Code hooks call.
 - `scripts/confirm-session.ps1` — focuses a VS Code window and types a reply.
-- `scripts/ha-bridge.ps1` — persistent process reacting to the device's
-  button and mute switch. Runs as a Scheduled Task (see Task 8).
+- `scripts/ha-bridge.ps1` — persistent background process. Subscribes to HA's
+  event stream and reacts to **button presses and dial rotation**; reconnects
+  with backoff if HA restarts. Runs as a Scheduled Task (Step 5). It does not
+  subscribe to the mute switch — mute is polled on demand, at the moment it
+  needs to decide whether to speak.
+
+Setup helpers:
+- `scripts/setup-ha-helpers.ps1` — reports whether the kill-switch helper
+  exists (it cannot create it; see Step 1).
+- `scripts/install-ha-bridge-task.ps1` — registers the Scheduled Task.
+  Requires an elevated PowerShell (Step 5).
+
+## Running the tests
+
+```powershell
+Import-Module Pester -MinimumVersion 5.0 -Force   # NOT the Windows-bundled 3.4.0
+Invoke-Pester claude-voice/scripts/*.Tests.ps1 -Output Detailed
+```
+
+30 tests, ~6 seconds. Two things worth knowing:
+
+- **Pester 5+ is required.** Windows ships a bundled Pester 3.4.0 that does
+  not support `BeforeAll`/`BeforeEach` and fails confusingly if it loads
+  instead — hence the explicit `-MinimumVersion`.
+- **The suite is isolated from your live hooks.** Each test runs against its
+  own throwaway state file and its own uniquely-named mutex, so running it
+  while Claude Code sessions are active neither blocks your real hooks nor
+  produces spurious failures. (Before that isolation existed, consecutive
+  full-suite runs gave 6/6, 6/6, then 4/6.)
+
+`ha-bridge.ps1` itself has no automated coverage — it's a top-level script
+wrapping an infinite supervision loop, so it isn't importable for testing. Its
+decision logic lives in `ButtonAction.psm1`, which is tested; the loop and the
+HA calls around it are verified by running it.
 
 ## Mode 2: Custom firmware ("Hey Claude" wake word + dial rotation)
 
@@ -212,9 +264,15 @@ Then:
 
 This registers a Scheduled Task called `ClaudeVoiceHaBridge` that:
 - Starts automatically at logon
-- Listens for button presses and mute-switch toggles on your HA Voice device
-- Responds to button presses by focusing the correct VS Code window and cycling notifications
-- Respects the `input_boolean.claude_notifications_enabled` kill-switch
+- Holds a WebSocket subscription to Home Assistant's event stream, reconnecting
+  with backoff if HA restarts or the network drops
+- Reacts to **button presses** (double-press cycles pending accounts,
+  long-press confirms and types the reply, triple-press dismisses) and, on the
+  custom Mode 2 firmware, to **dial rotation** as an alternative way to cycle
+- Checks the mute switch on demand when deciding whether to speak — it does not
+  subscribe to mute-switch changes
+- Respects the `input_boolean.claude_notifications_enabled` kill-switch, which
+  it checks before taking any action
 
 If the script fails with "Access is denied," you forgot to run as Administrator. Close the PowerShell window and try again with elevation.
 
