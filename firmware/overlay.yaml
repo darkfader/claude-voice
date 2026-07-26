@@ -14,6 +14,18 @@
 #    own "model" field ("hey_claude.tflite") is what actually points at the
 #    tflite file, resolved relative to the manifest's directory.
 #
+#    Deliberately NOT setting probability_cutoff/sliding_window_size here:
+#    esphome/components/micro_wake_word/__init__.py resolves both as
+#    `model_parameters.get(CONF_X, manifest[KEY_MICRO][CONF_X])` — i.e. a
+#    value on this YAML entry unconditionally *overrides* the manifest's
+#    own tuned value, it does not merely provide a fallback default. The
+#    manifest (models/hey_claude.json) already carries Task 2's real
+#    FRR/FAPH-curve-derived probability_cutoff (0.5, deliberately biased
+#    toward easier triggering to offset the synthetic-to-real-voice
+#    generalization gap) and sliding_window_size (5). Setting either field
+#    here would silently override that tuning, so the manifest is left as
+#    the single source of truth for both.
+#
 # 2. Exposes the dial's rotation to Home Assistant by adding a `name:` to
 #    the existing (upstream, internal-only) rotary_encoder sensor. This uses
 #    ESPHome's real `!extend` merge syntax: the tag goes on the *value of
@@ -27,8 +39,6 @@ micro_wake_word:
   models:
     - model: models/hey_claude.json
       id: hey_claude
-      probability_cutoff: 0.9
-      sliding_window_size: 5
 
 sensor:
   - id: !extend dial
