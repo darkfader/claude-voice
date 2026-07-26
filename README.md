@@ -180,8 +180,12 @@ as an automatable button event, so it plays no role in this integration.
 - [ ] Trigger a notification (e.g., a permission prompt, or let Claude go idle waiting for input)
 - [ ] Confirm on your HA Voice device:
   - LED pulses in the personal color (blue)
-  - Chime plays (if audio is on)
-  - TTS announces `"personal session needs input: <your message>"`
+  - TTS announces `"personal session needs input: <your message>"` — you'll
+    hear the device's own built-in preannounce tone play automatically
+    right before it speaks; that's `assist_satellite.announce`'s standard
+    behavior, not this project's `chime.wav` file. Our custom chime only
+    plays on its own when there's no speech (quiet submode, or a `Stop`
+    event) — see Phase 4.
 - [ ] Long-press the button — since exactly one account is pending, this confirms it directly with no prior double-press needed: the personal VS Code window comes to focus and a reply ("continue" by default) is typed and submitted
 - [ ] Confirm the reply arrives in the Claude session and `pending.json` clears the account
 - [ ] Run `ha-bridge.ps1` in the background (it's normally a Scheduled Task) — check that notifications continue to work

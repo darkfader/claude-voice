@@ -50,7 +50,12 @@ function Set-RemainingLed {
     $remaining = Get-PendingState
     $names = @($remaining.accounts.Keys | Sort-Object)
     if ($names.Count -gt 0) {
-        Invoke-HaLed -Connection $Connection -Account $names[0]
+        # Pulse, not solid -- a solid LED means "done" in this project's
+        # own vocabulary, and the remaining account is still waiting.
+        # Also set the cursor so the button's notion of "selected" agrees
+        # with what the LED is showing.
+        Set-PendingCursor -Account $names[0]
+        Invoke-HaLed -Connection $Connection -Account $names[0] -Pulse
     } else {
         Invoke-HaLed -Connection $Connection -Off
     }
