@@ -12,6 +12,106 @@ for the full design.
 - `scripts/ha-bridge.ps1` — persistent process reacting to the device's
   button and mute switch. Runs as a Scheduled Task (see Task 8).
 
+## Mode 2: Custom firmware ("Hey Claude" wake word + dial rotation)
+
+Separate from the notification/control-surface setup below, this device
+also runs **custom ESPHome firmware** (Plan 2 /
+`docs/superpowers/plans/2026-07-25-ha-voice-claude-wakeword-firmware.md`)
+that adds a fourth wake word, "Hey Claude" (routed to an Anthropic-backed
+Assist pipeline for freeform Q&A), and exposes the dial's rotation to Home
+Assistant so `ha-bridge.ps1` can cycle pending accounts by rotating the
+dial instead of double-pressing the button.
+
+> **Do not click "Install" on the `update.home_assistant_voice_0932b4`
+> entity in the Home Assistant UI.** That card tracks stock upstream
+> ESPHome releases. Since this device is running **custom** firmware, an
+> OTA install from that card would silently overwrite it with unmodified
+> stock firmware — removing the "Hey Claude" wake word and the
+> dial-rotation sensor with **no error shown anywhere**, and silently
+> breaking `ha-bridge.ps1`'s dial-rotation branch (it would simply stop
+> receiving events for a sensor that no longer exists). If a firmware
+> update is ever wanted, re-run the build/flash procedure below against a
+> newer submodule tag instead of using that entity.
+
+### Initializing the firmware submodule
+
+The upstream firmware source lives at
+`claude-voice/firmware/home-assistant-voice-pe/` as a **git submodule**. A
+plain `git clone` of this repo does **not** populate it — the directory
+exists but is empty, and every `esphome` command below will fail on
+missing files with no obvious hint that a submodule is the cause. Always
+run:
+
+```powershell
+git submodule update --init --recursive
+```
+
+The submodule is pinned to tag `26.6.0` (the firmware version confirmed
+installed on the device when this plan started) — a fixed commit, not a
+moving branch. **Only the submodule is pinned.** The ESPHome CLI itself is
+installed via a bare `pip install esphome`, which floats to whatever is
+current on PyPI at install time — re-running that command later could pull
+a newer ESPHome release and produce a different build than the one
+actually flashed. The exact CLI version used for the currently-flashed
+build was:
+
+```
+$ esphome version
+Version: 2026.7.2
+```
+
+If reproducing an identical build later matters, pin to that version:
+`pip install esphome==2026.7.2`.
+
+### Building and flashing — PowerShell only
+
+**All `esphome compile` / `esphome run` / `esphome upload` commands MUST be
+run from native PowerShell — never from the Bash/Git-Bash tool.** ESP-IDF's
+installer detects `$env:MSYSTEM` (which Git Bash sets and PowerShell does
+not) and refuses to run under it. This isn't a preference, it's a hard
+requirement confirmed during Plan 2 Task 1.
+
+```powershell
+# Compile only (no device needed) -- confirms the overlay still builds
+esphome compile claude-voice/firmware/custom-voice-pe.yaml
+
+# Flash over USB -- find the port first if you don't already know it
+[System.IO.Ports.SerialPort]::GetPortNames()
+esphome upload claude-voice/firmware/custom-voice-pe.yaml --device <COM port>
+```
+
+First flash of any custom build should always be over **USB**, not OTA, so
+there's a known-good recovery path (BOOT/RESET button hold) if something's
+wrong. `custom-voice-pe.yaml` packages the unmodified upstream
+`home-assistant-voice.factory.yaml` plus `overlay.yaml` (the "Hey Claude"
+model + the dial-rotation `name:` override) — board/flash/PSRAM settings
+are never touched directly.
+
+### Verifying Mode 2 after flashing
+
+- Say "Okay Nabu" + a known-working command — confirms the stock pipeline
+  still works, unregressed by the overlay.
+- Say "Hey Claude" — the LED ring should show the same listening animation
+  as "Okay Nabu", confirming the new wake-word model is being evaluated.
+- In Home Assistant, check Developer Tools → States for
+  **`sensor.bedroom_home_assistant_voice_0932b4_dial_rotation`** (confirmed
+  real entity ID — area-prefixed, not the non-prefixed form originally
+  assumed during planning) and confirm its state changes when the dial is
+  rotated.
+- Rotate the dial without holding the center button and confirm volume
+  still changes exactly as before — confirms the dial-rotation `!extend`
+  override didn't disturb the stock volume/hue scripts.
+- With 2+ Claude Code accounts pending, rotate the dial and confirm it
+  cycles the selection (LED-only feedback, no spoken name — see final
+  review notes in `claude-voice/docs/home-assistant-voice-device.md`). With
+  0 or 1 accounts pending, rotating the dial should do nothing beyond its
+  normal volume/hue behavior.
+
+See `claude-voice/docs/home-assistant-voice-device.md` for the full device
+reference (entity IDs, the LED-masking limitation, the wake-word
+sensitivity-control limitation for "Hey Claude") and the plan document
+above for the complete task-by-task build history.
+
 ## Setup
 
 ### Prerequisites
