@@ -5,7 +5,6 @@ $script:SatelliteEntity = 'assist_satellite.home_assistant_voice_0932b4_assist_s
 $script:MuteEntity = 'switch.home_assistant_voice_0932b4_mute'
 $script:KillSwitchEntity = 'input_boolean.claude_notifications_enabled'
 $script:ChimeMediaId = 'media-source://media_source/local/claude-voice/chime.wav'
-$script:AccountColors = @{ personal = @(0,120,255); work = @(160,32,240) }
 
 function Read-DotEnv {
     param([Parameter(Mandatory)][string]$Path)
@@ -82,17 +81,16 @@ function Test-HaNotificationsEnabled {
 function Invoke-HaLed {
     param(
         [Parameter(Mandatory)][hashtable]$Connection,
-        [ValidateSet('personal','work')][string]$Account,
-        [switch]$Pulse,
+        [int[]]$Rgb,
+        [int]$Brightness = 255,
+        [switch]$Flash,
         [switch]$Off,
-        [ValidateSet('short','long')][string]$Flash = 'long',
         [double]$TransitionSec = 0.3
     )
-    # transition: firmware defaults to a 0ms instant snap otherwise — a
-    # short fade reads as noticeably more polished for near-zero cost.
-    # Flash defaults to 'long' (existing notification behavior unchanged);
-    # callers doing lightweight cycle-select feedback can pass -Flash short
-    # to distinguish "just browsing" from "needs your attention".
+    # -Flash is a ONE-SHOT attention grab on arrival, not a state. It runs for
+    # a fixed ~10s and then reverts the light to its PREVIOUS state (verified
+    # live: lit at t+9s, off at t+12s). So always set the colour solid; use
+    # -Flash only to add a single eye-catching blink on top of it.
     if ($Off) {
         Invoke-HaService -Connection $Connection -Domain light -Service turn_off -Body @{
             entity_id  = $script:LedEntity
@@ -100,13 +98,25 @@ function Invoke-HaLed {
         }
         return
     }
-    $body = @{ entity_id = $script:LedEntity; rgb_color = $script:AccountColors[$Account]; brightness = 180 }
-    if ($Pulse) {
-        $body['flash'] = $Flash
-    } else {
-        $body['transition'] = $TransitionSec
+    if (-not $Rgb) { throw "Invoke-HaLed requires -Rgb unless -Off is used" }
+
+    $body = @{
+        entity_id  = $script:LedEntity
+        rgb_color  = $Rgb
+        brightness = $Brightness
+        transition = $TransitionSec
     }
-    Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body $body
+    $ok = Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body $body
+
+    if ($Flash -and $ok) {
+        # Separate call, deliberately after the solid set: the flash reverts
+        # to whatever preceded it, which is now the solid colour we want.
+        Invoke-HaService -Connection $Connection -Domain light -Service turn_on -Body @{
+            entity_id = $script:LedEntity
+            flash     = 'short'
+        } | Out-Null
+    }
+    $ok
 }
 
 function Invoke-HaChime {
