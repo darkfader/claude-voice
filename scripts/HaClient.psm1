@@ -82,7 +82,7 @@ function Test-HaNotificationsEnabled {
 function Invoke-HaLed {
     param(
         [Parameter(Mandatory)][hashtable]$Connection,
-        [string]$Account,
+        [ValidateSet('personal','work')][string]$Account,
         [switch]$Pulse,
         [switch]$Off,
         [ValidateSet('short','long')][string]$Flash = 'long',
