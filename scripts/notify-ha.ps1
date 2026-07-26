@@ -4,41 +4,61 @@ param(
     [Parameter(ValueFromPipeline = $true)][object]$InputObject
 )
 
-Import-Module (Join-Path $PSScriptRoot 'PendingState.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'HaClient.psm1')     -Force
-Import-Module (Join-Path $PSScriptRoot 'NotifyPlan.psm1')   -Force
-Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
+# Nothing below may ever throw out of this script: it runs as a Claude Code
+# hook, and a non-zero exit would surface as a hook failure in the user's
+# session. Belt and braces -- the try/catch below plus this trap.
+trap { Write-Warning "notify-ha.ps1 trapped: $_"; exit 0 }
 
-# --- read the hook payload -------------------------------------------------
-$payload = $null
-if ($InputObject) {
-    if ($InputObject -is [string]) { try { $payload = $InputObject | ConvertFrom-Json } catch { } }
-    else { $payload = $InputObject }
+function Get-PayloadValue {
+    param($Payload, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Payload) { return $null }
+    # A hashtable's dictionary entries are NOT PSObject properties, so the
+    # two shapes need different access paths.
+    if ($Payload -is [System.Collections.IDictionary]) { return $Payload[$Name] }
+    $prop = $Payload.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    $null
 }
-if (-not $payload) {
-    try {
-        if ([Console]::IsInputRedirected) {
-            $stdin = [Console]::In.ReadToEnd()
-            if ($stdin) { $payload = $stdin | ConvertFrom-Json }
-        }
-    } catch { }
-}
-
-$sessionId = $null; $cwd = $null; $message = ''
-if ($payload) {
-    $sessionId = $payload.session_id
-    $cwd       = $payload.cwd
-    if ($payload.PSObject.Properties.Name -contains 'message') { $message = [string]$payload.message }
-}
-# Fall back to the working directory so a notification is never lost outright
-# just because a payload field was missing.
-if (-not $cwd)       { $cwd = (Get-Location).Path }
-if (-not $sessionId) { $sessionId = 'cwd:' + (Get-NormalisedProjectPath -Path $cwd) }
-$project = Split-Path $cwd -Leaf
 
 try {
+    Import-Module (Join-Path $PSScriptRoot 'PendingState.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'HaClient.psm1')     -Force
+    Import-Module (Join-Path $PSScriptRoot 'NotifyPlan.psm1')   -Force
+    Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
+
+    # --- read the hook payload -------------------------------------------------
+    $payload = $null
+    if ($InputObject) {
+        if ($InputObject -is [string]) { try { $payload = $InputObject | ConvertFrom-Json } catch { } }
+        else { $payload = $InputObject }
+    }
+    if (-not $payload) {
+        try {
+            if ([Console]::IsInputRedirected) {
+                $stdin = [Console]::In.ReadToEnd()
+                if ($stdin) { $payload = $stdin | ConvertFrom-Json }
+            }
+        } catch { }
+    }
+
+    $sessionId = Get-PayloadValue -Payload $payload -Name 'session_id'
+    $cwd       = Get-PayloadValue -Payload $payload -Name 'cwd'
+    $message   = [string](Get-PayloadValue -Payload $payload -Name 'message')
+
+    # Fall back to the working directory so a notification is never lost outright
+    # just because a payload field was missing.
+    if (-not $cwd)       { $cwd = (Get-Location).Path }
+    if (-not $sessionId) { $sessionId = 'cwd:' + (Get-NormalisedProjectPath -Path $cwd) }
+    $project = Split-Path $cwd -Leaf
+
     $before      = Get-PendingState
     $othersCount = @($before.sessions.Keys | Where-Object { $_ -ne $sessionId }).Count
+    # Captured BEFORE the switch mutates state: for stop/clear the entry is gone
+    # by the time we need its colour/ordinal, and recomputing is not equivalent --
+    # Resolve-SessionColorSlot without -TakenSlots can pick a different slot than
+    # the one originally assigned, so the dim ambient colour would not match what
+    # was shown while the session was pending.
+    $prevEntry = $before.sessions[$sessionId]
 
     # --- local bookkeeping first, before any network call --------------------
     # Doing this ahead of the kill-switch check means toggling the switch off
@@ -63,7 +83,11 @@ try {
     }
 
     $after   = Get-PendingState
-    $entry   = $after.sessions[$sessionId]
+    # Prefer the still-pending entry; fall back to the one just cleared (stop/clear
+    # always land here since the switch above already removed it) rather than
+    # recomputing, which would drop -TakenSlots collision-avoidance and could show
+    # a colour that never matched what was actually displayed while pending.
+    $entry   = if ($after.sessions.ContainsKey($sessionId)) { $after.sessions[$sessionId] } else { $prevEntry }
     $ordinal = if ($entry) { $entry.ordinal } else { 1 }
     $rgb     = if ($entry) { $entry.color } else { (ConvertFrom-HueSlot -Slot (Resolve-SessionColorSlot -ProjectPath $cwd)) }
     $display = Get-SessionDisplayName -Project $project -Ordinal $ordinal
