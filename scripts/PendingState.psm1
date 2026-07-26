@@ -6,6 +6,18 @@ function Set-PendingStatePath {
     $script:StatePath = $Path
 }
 
+# Test seam, mirroring Set-PendingStatePath. The default mutex name is
+# process-wide-shared by design -- that's the whole point in production, where
+# concurrent Claude Code hooks in different processes must serialise writes to
+# pending.json. But it means a test suite that takes the real mutex also blocks
+# live hooks, and live hooks can make the suite fail spuriously by holding the
+# mutex when a test expects to. Tests point this at a unique throwaway name so
+# the two never contend.
+function Set-PendingStateMutexName {
+    param([Parameter(Mandatory)][string]$Name)
+    $script:MutexName = $Name
+}
+
 function Get-PendingState {
     if (-not (Test-Path $script:StatePath)) {
         return @{ accounts = @{}; cursor = $null }
@@ -77,4 +89,4 @@ function Set-PendingCursor {
     }
 }
 
-Export-ModuleMember -Function Set-PendingStatePath, Get-PendingState, Set-PendingAccount, Clear-PendingAccount, Set-PendingCursor
+Export-ModuleMember -Function Set-PendingStatePath, Set-PendingStateMutexName, Get-PendingState, Set-PendingAccount, Clear-PendingAccount, Set-PendingCursor
