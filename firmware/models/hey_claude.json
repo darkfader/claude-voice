@@ -2,7 +2,6 @@
   "type": "micro",
   "wake_word": "Hey Claude",
   "author": "darkfader (synthetic-only v1, trained with microWakeWord)",
-  "website": "",
   "model": "hey_claude.tflite",
   "trained_languages": [
     "en"
