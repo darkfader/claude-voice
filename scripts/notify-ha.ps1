@@ -31,19 +31,20 @@ if (-not $PSBoundParameters.ContainsKey('Message')) {
 }
 
 try {
+    switch ($Event) {
+        'notification' { Set-PendingAccount -Account $Account -Project (Split-Path (Get-Location) -Leaf) -Message $Message }
+        'clear'        { Clear-PendingAccount -Account $Account }
+        'stop'         { Clear-PendingAccount -Account $Account }
+    }
+
     $conn = Get-HaConnection
 
     if (-not (Test-HaNotificationsEnabled -Connection $conn)) {
         exit 0
     }
 
-    $muted = Test-HaMuted -Connection $conn
+    $muted = if ($Event -eq 'notification') { Test-HaMuted -Connection $conn } else { $false }
     $plan = Get-NotifyPlan -Event $Event -Account $Account -Message $Message -Muted $muted
-
-    switch ($Event) {
-        'notification' { Set-PendingAccount -Account $Account -Project (Split-Path (Get-Location) -Leaf) -Message $Message }
-        'clear'        { Clear-PendingAccount -Account $Account }
-    }
 
     if ($plan.Led.Off) {
         Invoke-HaLed -Connection $conn -Off
