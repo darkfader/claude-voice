@@ -23,16 +23,24 @@ function Get-ButtonAction {
             return @{ Action = 'select'; Account = $next; Speak = "$next selected" }
         }
         'long_press' {
-            if (-not $Cursor -or $names -notcontains $Cursor) {
+            $effectiveCursor = $Cursor
+            if ((-not $effectiveCursor -or $names -notcontains $effectiveCursor) -and $names.Count -eq 1) {
+                $effectiveCursor = $names[0]
+            }
+            if (-not $effectiveCursor -or $names -notcontains $effectiveCursor) {
                 return @{ Action = 'none'; Account = $null; Speak = 'Nothing selected' }
             }
-            return @{ Action = 'confirm'; Account = $Cursor; Speak = $null }
+            return @{ Action = 'confirm'; Account = $effectiveCursor; Speak = $null }
         }
         'triple_press' {
-            if (-not $Cursor -or $names -notcontains $Cursor) {
+            $effectiveCursor = $Cursor
+            if ((-not $effectiveCursor -or $names -notcontains $effectiveCursor) -and $names.Count -eq 1) {
+                $effectiveCursor = $names[0]
+            }
+            if (-not $effectiveCursor -or $names -notcontains $effectiveCursor) {
                 return @{ Action = 'none'; Account = $null; Speak = 'Nothing selected' }
             }
-            return @{ Action = 'dismiss'; Account = $Cursor; Speak = $null }
+            return @{ Action = 'dismiss'; Account = $effectiveCursor; Speak = $null }
         }
     }
 }

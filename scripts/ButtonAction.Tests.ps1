@@ -30,8 +30,23 @@ Describe 'Get-ButtonAction' {
         $a.Account | Should -Be 'personal'
     }
 
-    It 'long_press with no cursor selected does nothing' {
+    It 'long_press with a stale cursor and multiple pending accounts does nothing' {
+        # Cursor points at an account no longer pending (e.g. it was cleared),
+        # and there's more than one candidate, so it can't be auto-resolved
+        # the way a single pending account can be. Distinct from the
+        # no-cursor-at-all case covered below.
+        $a = Get-ButtonAction -EventType 'long_press' -PendingAccounts @{ personal = @{}; work = @{} } -Cursor 'someone-else'
+        $a.Action | Should -Be 'none'
+    }
+
+    It 'long_press with no cursor but exactly one pending account confirms that account' {
         $a = Get-ButtonAction -EventType 'long_press' -PendingAccounts @{ personal = @{} } -Cursor $null
+        $a.Action | Should -Be 'confirm'
+        $a.Account | Should -Be 'personal'
+    }
+
+    It 'long_press with no cursor and two pending accounts still does nothing' {
+        $a = Get-ButtonAction -EventType 'long_press' -PendingAccounts @{ personal = @{}; work = @{} } -Cursor $null
         $a.Action | Should -Be 'none'
     }
 
