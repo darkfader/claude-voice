@@ -1,17 +1,17 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('personal','work')][string]$Account,
+    [Parameter(Mandatory)][string]$SessionId,
+    [Parameter(Mandatory)][string]$Project,
     [string]$Text = 'continue',
 
     # Focus the session's window and clear its pending state, but type
     # nothing. This is what the device's long-press uses: the Notification
     # hook fires mainly when Claude is asking PERMISSION for something, so
     # auto-sending "continue" from across the room approves whatever was
-    # asked without the human having read it. Focus-only takes you to the
-    # session and stops the light; you decide there.
+    # asked without the human having read it.
     [switch]$FocusOnly
 )
 
-Import-Module (Join-Path $PSScriptRoot 'WindowFocus.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'WindowFocus.psm1')  -Force
 Import-Module (Join-Path $PSScriptRoot 'PendingState.psm1') -Force
 
 Add-Type @"
@@ -23,9 +23,9 @@ public class ClaudeVoiceWin32 {
 }
 "@
 
-$target = Find-AccountWindow -Account $Account -Processes (Get-Process)
+$target = Find-SessionWindow -Project $Project -Processes (Get-Process)
 if (-not $target) {
-    Write-Warning "No window found for account '$Account' (pattern: $(Get-AccountWindowPattern -Account $Account))"
+    Write-Warning "No window found for project '$Project' (pattern: $(Get-ProjectWindowPattern -Project $Project))"
     exit 1
 }
 
@@ -40,5 +40,5 @@ if (-not $FocusOnly) {
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
 }
 
-Clear-PendingAccount -Account $Account
+Clear-PendingSession -SessionId $SessionId
 exit 0
