@@ -5,12 +5,15 @@ $conn = Get-HaConnection
 $existing = Get-HaState -Connection $conn -EntityId 'input_boolean.claude_notifications_enabled'
 
 if ($existing) {
-    Write-Host "input_boolean.claude_notifications_enabled already exists (state: $($existing.state)) — nothing to do."
-    exit 0
+    Write-Host "input_boolean.claude_notifications_enabled exists (state: $($existing.state))."
+} else {
+    Write-Host @"
+input_boolean.claude_notifications_enabled does not exist yet.
+Home Assistant's REST API has no endpoint for creating helpers (confirmed
+by testing multiple endpoint patterns -- this isn't a bug in this script,
+HA genuinely doesn't expose helper creation over REST). Create it manually:
+
+  Settings -> Devices & Services -> Helpers -> + Create Helper -> Toggle
+  Name: "Claude Notifications Enabled"
+"@
 }
-
-Invoke-RestMethod -Uri "$($conn.Url)/api/config/input_boolean/config/claude_notifications_enabled" `
-    -Method POST -Headers $conn.Headers `
-    -Body (@{ name = 'Claude Notifications Enabled'; initial = $true } | ConvertTo-Json)
-
-Write-Host "Created input_boolean.claude_notifications_enabled."
