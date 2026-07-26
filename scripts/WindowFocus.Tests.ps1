@@ -30,4 +30,11 @@ Describe 'Find-SessionWindow' {
         $procs = @([PSCustomObject]@{ MainWindowTitle = 'HomeAssistant - Notepad'; MainWindowHandle = [IntPtr]1; Id = 1 })
         Find-SessionWindow -Project 'HomeAssistant' -Processes $procs | Should -BeNullOrEmpty
     }
+
+    It 'matches a project whose name contains wildcard metacharacters' {
+        $procs = @(
+            [PSCustomObject]@{ MainWindowTitle = 'x.ps1 - my[test]proj - Visual Studio Code'; MainWindowHandle = [IntPtr]1; Id = 42 }
+        )
+        (Find-SessionWindow -Project 'my[test]proj' -Processes $procs).Id | Should -Be 42
+    }
 }

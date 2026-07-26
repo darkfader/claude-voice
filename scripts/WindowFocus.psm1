@@ -4,7 +4,12 @@
 # same window and cannot be told apart for focusing.
 function Get-ProjectWindowPattern {
     param([Parameter(Mandatory)][string]$Project)
-    "*$Project*Visual Studio Code*"
+    # Escape wildcard metacharacters: -like treats * ? [ ] as pattern syntax,
+    # and Windows folder names may legally contain [ or ]. Without this, a
+    # project like "my[test]proj" silently never matches its own window.
+    # WildcardPattern::Escape (not regex::Escape) is the right API for -like.
+    $safe = [System.Management.Automation.WildcardPattern]::Escape($Project)
+    "*$safe*Visual Studio Code*"
 }
 
 function Find-SessionWindow {
