@@ -189,7 +189,22 @@ while ($true) {
                     [System.Globalization.NumberStyles]::Float,
                     [System.Globalization.CultureInfo]::InvariantCulture,
                     [ref]$dialValue)
-                if ($isNumericDialState) {
+                # Also skip the firmware's own counter-reset sentinel. Upstream
+                # `control_volume` (home-assistant-voice.yaml:1283-1305) is
+                # `mode: restart` with `- delay: 1s` then
+                # `sensor.rotary_encoder.set_value: value: 0`, so ~1000ms after
+                # the LAST detent of a gesture the firmware publishes a numeric
+                # `0` that is not a user action at all. That lands outside the
+                # 800ms debounce window (which is measured from the FIRST
+                # detent's action), so without this guard every single turn
+                # produced a second, phantom cursor advance -- and with exactly
+                # 2 pending accounts, the gated primary case, it advanced and
+                # immediately reverted, making the whole feature a no-op.
+                # Skipping `0` also drops the equivalent spurious cycle on
+                # device reboot (first post-boot publish is `0`). A genuine
+                # user return-to-zero mid-gesture is almost always swallowed by
+                # the debounce anyway, so this costs effectively nothing.
+                if ($isNumericDialState -and $dialValue -ne 0) {
                     try {
                         Invoke-DialRotationEvent -Connection $conn
                     } catch {
