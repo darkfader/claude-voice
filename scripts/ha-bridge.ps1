@@ -5,6 +5,14 @@ Import-Module (Join-Path $PSScriptRoot 'ButtonAction.psm1') -Force
 
 $logPath = Join-Path $PSScriptRoot '..\state\ha-bridge.log'
 
+# Debounce state for dial-rotation gestures (Fix 3, final review): a single
+# physical turn fires many rapid detent events plus one extra ~1s after the
+# gesture ends (firmware resets its internal rotary counter). Track when the
+# last dial-rotation action actually fired so a whole gesture collapses into
+# one action instead of one HA call per detent.
+$script:LastDialActionAt = [datetime]::MinValue
+$script:DialDebounceMs = 800
+
 function Write-BridgeLog {
     param([string]$Message)
     $line = "$(Get-Date -Format o) $Message"
@@ -67,13 +75,42 @@ function Invoke-DialRotationEvent {
     if (-not (Test-HaNotificationsEnabled -Connection $Connection)) { return }
 
     $state = Get-PendingState
+    # Fix 1 (final review): the dial has ALWAYS controlled speaker volume
+    # (rotate alone) and LED-ring hue (rotate while holding the center
+    # button) in stock firmware -- that's the device's normal, everyday
+    # behavior. Dial-cycling must only ever act for the specific case it was
+    # built for: 2+ Claude Code sessions actually pending. With 0 pending
+    # there's nothing to cycle. With exactly 1, Get-DialCycleTarget keeps
+    # returning that same account on every single detent forever (cursor
+    # $null -> index -1 -> wraps to names[0]; cursor already names[0] ->
+    # (0+1) % 1 -> 0 -- same result again), which without this gate
+    # re-announced/re-pulsed on every tick, endlessly. Gating here means
+    # ordinary volume/hue turns (0 or 1 pending accounts -- every normal
+    # day) are completely unaffected: no cursor mutation, no LED call, no
+    # sound.
+    if ($state.accounts.Count -lt 2) { return }
+
+    $now = Get-Date
+    if (($now - $script:LastDialActionAt).TotalMilliseconds -lt $script:DialDebounceMs) {
+        # Fix 3: ignore events that arrive within the debounce window of the
+        # last action actually taken -- collapses a whole rotation gesture
+        # (many rapid detent events) into a single action.
+        return
+    }
+
     $next = Get-DialCycleTarget -PendingAccounts $state.accounts -Cursor $state.cursor
     if (-not $next) { return }
 
+    $script:LastDialActionAt = $now
     Set-PendingCursor -Account $next
     Invoke-HaLed -Connection $Connection -Account $next -Pulse
+    # Fix 3: no spoken account name for dial-cycling -- LED-only feedback by
+    # design intent (a per-detent 10s-timeout TTS call was an unintended
+    # Task 7 addition, not a deliberate spec choice, and could otherwise
+    # stall this event loop for many seconds while button presses queue up
+    # unhandled). The button's double_press fallback still announces the
+    # name via Invoke-ButtonEvent -- unaffected by this change.
     if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection }
-    else { Invoke-HaAnnounce -Connection $Connection -Text "$next selected" }
 }
 
 function Invoke-ButtonEvent {
@@ -140,10 +177,24 @@ while ($true) {
                     }
                 }
             } elseif ($data.entity_id -eq 'sensor.bedroom_home_assistant_voice_0932b4_dial_rotation') {
-                try {
-                    Invoke-DialRotationEvent -Connection $conn
-                } catch {
-                    Write-BridgeLog "Invoke-DialRotationEvent failed (continuing): $_"
+                # Fix 2 (final review): a reboot or Wi-Fi blip produces
+                # <n> -> unavailable -> unknown transitions on this sensor,
+                # each of which would otherwise fire a spurious cycle. Only
+                # proceed when the new state actually parses as a number,
+                # mirroring the button-press branch's `if ($eventType)` guard
+                # above.
+                $dialValue = 0.0
+                $isNumericDialState = [double]::TryParse(
+                    [string]$data.new_state.state,
+                    [System.Globalization.NumberStyles]::Float,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$dialValue)
+                if ($isNumericDialState) {
+                    try {
+                        Invoke-DialRotationEvent -Connection $conn
+                    } catch {
+                        Write-BridgeLog "Invoke-DialRotationEvent failed (continuing): $_"
+                    }
                 }
             }
         }

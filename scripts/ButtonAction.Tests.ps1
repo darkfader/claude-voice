@@ -85,4 +85,22 @@ Describe 'Get-DialCycleTarget' {
         $pending = @{ work = @{}; personal = @{} }
         Get-DialCycleTarget -PendingAccounts $pending -Cursor 'someone-else' | Should -Be 'personal'
     }
+
+    It 'with exactly one pending account, keeps returning that same account no matter the cursor' {
+        # Final review (Fix 1): this is the single-account case the existing
+        # 0/2/3-account tests never covered. Get-DialCycleTarget itself has
+        # no special-case for count -eq 1 -- both a $null cursor (index -1,
+        # wraps to names[0]) and a cursor already equal to names[0]
+        # ((0 + 1) % 1 = 0) land back on the same lone account. That's
+        # correct behavior for this pure function, but calling it
+        # unconditionally on every dial detent (as ha-bridge.ps1's
+        # Invoke-DialRotationEvent used to) would re-announce/re-pulse the
+        # same account forever on a single ordinary volume/hue turn -- which
+        # is why ha-bridge.ps1 now gates dial-cycling to only run when 2+
+        # accounts are pending, never calling this function at all for the
+        # 1-account case.
+        $pending = @{ personal = @{} }
+        Get-DialCycleTarget -PendingAccounts $pending -Cursor $null | Should -Be 'personal'
+        Get-DialCycleTarget -PendingAccounts $pending -Cursor 'personal' | Should -Be 'personal'
+    }
 }
