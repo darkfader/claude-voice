@@ -15,7 +15,16 @@ for the full design rationale.
   ROM-level hardware bootloader — effectively unbrickable via USB/UART
   recovery, though wrong flash/PSRAM variant settings have bricked some
   units in the community (not a bootloader problem, a config problem).
-- Firmware version at last check: `26.6.0` (latest as of 2026-07).
+- Firmware version at last check: `26.6.0` (latest as of 2026-07). As of Plan
+  2 (Mode 2), the device runs a **custom build** based on that same `26.6.0`
+  tag — see
+  `docs/superpowers/plans/2026-07-25-ha-voice-claude-wakeword-firmware.md`
+  and `claude-voice/README.md` for the build/flash procedure — not
+  unmodified stock. The official
+  `update.home_assistant_voice_0932b4` OTA card still tracks stock upstream
+  releases; installing from it would silently overwrite the custom build.
+  **Do not click Install on that entity** — see `claude-voice/README.md`
+  for the full warning.
 
 ## Hardware capabilities
 
@@ -27,9 +36,25 @@ for the full design rationale.
 - Built-in stock wake words: `Hey Jarvis`, `Hey Mycroft`, `Okay Nabu`. No
   custom-phrase support in stock firmware at any released version so far —
   confirmed by checking the live device after updating to the latest
-  release. A custom phrase (e.g. "Hey Claude") requires training a
-  microWakeWord model and building/flashing custom firmware (see Mode 2 in
-  the design spec) — there is no simpler path.
+  release. A custom phrase requires training a microWakeWord model and
+  building/flashing custom firmware — there is no simpler path.
+  **Update (Mode 2, now built and flashed):** a fourth wake word, `Hey
+  Claude`, has been trained and added via a custom firmware overlay
+  (`claude-voice/firmware/overlay.yaml`). Four wake words are available on this device
+  today: `Hey Jarvis`, `Hey Mycroft`, `Okay Nabu` (stock), and `Hey Claude`
+  (custom, routes to a second Assist pipeline backed by the Anthropic
+  conversation agent — see "Wake-word routing" below).
+  - **Sensitivity limitation:** the physical "Wake word sensitivity" select
+    (`select.home_assistant_voice_0932b4_wake_word_sensitivity` —
+    Slightly/Moderately/Very sensitive) only adjusts `probability_cutoff`
+    for the three stock models (`okay_nabu`, `hey_jarvis`, `hey_mycroft`);
+    the overlay never extended that lambda to cover `hey_claude`, so this
+    on-device control does nothing for it. `Hey Claude`'s cutoff (`0.5`,
+    baked into `models/hey_claude.json`) is more aggressive than any stock
+    model's (`0.85`–`0.97` at "Slightly sensitive"), and this wake word
+    routes to a paid Anthropic API, so false wakes have a real cost.
+    Sensitivity is fixed at flash time — retraining and reflashing the
+    model is currently the only way to change it.
 - Wake-word engine is microWakeWord (on-device, low latency) — different
   from openWakeWord (server-side, used by satellites like the ATOM Echo
   that stream raw audio to HA). This matters because openWakeWord's
@@ -46,12 +71,28 @@ for the full design rationale.
 - **Rotary dial** (`platform: rotary_encoder`, GPIO16/18) with an
   integrated push-button ("center button"). Stock behavior: rotate alone →
   volume up/down; hold the center button while rotating → LED ring hue
-  change instead.
-  - **Rotation itself is NOT exposed to Home Assistant** in stock
-    firmware — the sensor has no `name:` in the upstream YAML, so it's
-    internal-only, consumed entirely by on-device volume/hue scripts.
-    Exposing it (just adding a `name:` via a `!extend` override, no other
-    change) is part of the Mode 2 firmware work.
+  change instead. **This stock behavior is unchanged and still the normal,
+  everyday behavior of the dial** — nothing about Mode 2 or the
+  `ha-bridge.ps1` dial-cycling feature below alters it.
+  - **Rotation is now exposed to Home Assistant**, as of Mode 2's custom
+    firmware overlay (`claude-voice/firmware/overlay.yaml`): confirmed real
+    entity ID is `sensor.bedroom_home_assistant_voice_0932b4_dial_rotation`
+    (area-prefixed, not the non-prefixed form originally assumed during
+    planning). In stock firmware this sensor has no `name:`, so it's
+    internal-only, consumed entirely by on-device volume/hue scripts; the
+    overlay adds just a `name:` via a `!extend` override, leaving pins,
+    resolution, and the volume/hue scripts byte-identical to upstream. Live
+    query at time of writing: state `unknown` (device idle, dial untouched
+    since boot) — a reminder that this sensor legitimately reports
+    non-numeric states (`unknown`/`unavailable`) as well as numbers, which
+    `ha-bridge.ps1` must and does guard against (see below).
+  - **`ha-bridge.ps1` only ever acts on this sensor's rotation when 2+
+    Claude Code accounts are pending** (final review, Plan 2) — the
+    specific case the dial-cycling feature exists for. With 0 or 1
+    accounts pending, i.e. every ordinary day, rotating the dial does
+    nothing beyond its stock volume/hue behavior; the bridge doesn't touch
+    the cursor, LED, or state at all. See "Control surfaces" below for the
+    full behavior once 2+ accounts are pending.
   - The center-button click IS exposed, as part of the same button-press
     event entity below (best guess — the "center button" binary_sensor
     referenced in the volume-control lambda is very likely the same
@@ -139,17 +180,46 @@ for the full design rationale.
   submode is full session control with zero spoken output.
 - Mode 2 (wake words) needs no special handling — mic is physically off,
   wake-word detection is already impossible.
+- Dial-cycling (below) never speaks an account name regardless of mute
+  state (final review, Fix 3) — mute only continues to matter for the
+  `double_press` button fallback, which still suppresses its spoken
+  account name when muted, same as before.
 
 ### Control surfaces (device → Claude Code session)
 
-- **Primary, once Mode 2 firmware lands**: rotate the dial to cycle
-  through pending accounts (LED updates live per detent, in that account's
-  color), long-press (center-button click) to confirm/send a reply,
-  triple-press to dismiss without responding.
+- **Primary, now that Mode 2 firmware is built and flashed**: rotate the
+  dial to cycle through pending accounts, long-press (center-button click)
+  to confirm/send a reply, triple-press to dismiss without responding.
+  Two important corrections from the original design, both added after
+  Plan 2's final review:
+  - **Gated to 2+ pending accounts.** The dial has always controlled
+    speaker volume (rotate alone) and LED-ring hue (rotate while holding
+    the center button) — that's its normal, everyday behavior, and every
+    rotation fires this same HA sensor regardless of intent.
+    `ha-bridge.ps1`'s dial-cycling code only ever acts when 2+ accounts are
+    actually pending (the specific case it exists for); with 0 or 1
+    pending, ordinary volume/hue turns are completely unaffected — no
+    cursor mutation, no LED call, no sound. This also incidentally fixed a
+    bug where, with exactly 1 account pending, the old code re-announced
+    that account's name on every single detent forever.
+  - **LED update is not actually live.** The design originally promised the
+    LED updates "immediately, live, as you turn it." That isn't achievable
+    given the current firmware: the stock `control_leds` lambda treats the
+    dial as "recently touched" for about a second after the last detent
+    and drives the same physical LED strip with its own "Volume Display"
+    effect during that window, overwriting our LED call almost
+    immediately. The update only becomes visible once that window elapses.
+    Rapid detents from a single physical turn are also debounced into one
+    action (~800ms), with LED-only feedback — no per-detent spoken account
+    name (the previous per-detent TTS could otherwise queue up many
+    overlapping 10-second announce calls and stall the bridge's event loop
+    for a long time).
 - **Fallback, stock firmware, always available**: `double_press`
-  substitutes for dial rotation (same cursor, spoken account name instead
-  of live LED preview since there's no continuous rotation signal to key
-  off of). `long_press`/`triple_press` behave identically either way.
+  substitutes for dial rotation (same cursor, spoken account name via TTS
+  since there's no working live LED preview during rotation to key off of
+  — see above). `long_press`/`triple_press` behave identically either way.
+  Both surfaces are live simultaneously now — `double_press` isn't a
+  stopgap waiting on firmware, it's a standing alternative.
 - **Optional, richer**: a Stream Controller ("Soomfon", StreamDock/HotSpot
   platform) macro deck already on this PC, with native plugins for HA
   control, VS Code terminal injection, and window-focus/switch-to — a
