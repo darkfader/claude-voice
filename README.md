@@ -103,6 +103,42 @@ The three hooks in `.claude/settings.json` use `-Account personal`. To enable no
 
 This is documented separately in that project's integration notes.
 
+### (Optional) Stream Controller "Claude" page
+
+If you own a [Stream Controller](https://www.soomfon.com) (StreamDock or HotSpot device) with the Nicollas R. Stream Deck VS Code plugin already installed, you can build an alternative control surface for approving pending Claude sessions without using the HA Voice device button.
+
+**Note:** This section is entirely optional. The HA Voice device button (from Step 5) already provides full control — the Stream Controller is an alternative for users who prefer a dedicated button on their device.
+
+#### Install the companion VS Code extension
+
+In VS Code:
+1. Open **Extensions** (Ctrl+Shift+X)
+2. Search for **"Stream Deck for Visual Studio Code"** (by Nicollas R.)
+3. Click **Install**
+
+This extension allows the Stream Controller to execute terminal commands and focus VS Code windows.
+
+#### Build the "Claude" page
+
+In the Stream Controller app, create a new page called "Claude" with two buttons:
+
+**Button 1: "Approve: Personal"**
+- Action 1 (SwitchTo): Target window title `*HomeAssistant*Visual Studio Code*`
+- Action 2 (Execute Terminal Command): Text `continue`
+
+**Button 2: "Approve: Work"**
+- Action 1 (SwitchTo): Target window title `*sownet*Visual Studio Code*`
+- Action 2 (Execute Terminal Command): Text `continue`
+
+#### Verification
+
+With a pending Claude session (check `claude-voice/state/pending.json`), press the corresponding button on your Stream Controller. The expected behavior:
+1. The correct VS Code window (personal or work) comes to the front
+2. The text "continue" is typed and submitted into the terminal
+3. The pending state clears and any LED indicator resets
+
+Because `UserPromptSubmit` fires regardless of who typed the reply, no additional integration code is needed — the pending-state sync works the same way as with the HA Voice button.
+
 ### Verification Checklist
 
 Run through all four phases to confirm the integration is working:
