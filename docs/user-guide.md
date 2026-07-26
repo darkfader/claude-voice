@@ -32,6 +32,7 @@ other.
 | A session needs your input, nothing else pending | **Solid, full brightness**, that session's colour, one flash on arrival | Speaks: *"&lt;project&gt; needs input: &lt;message&gt;"* |
 | A session needs your input, something else already pending | Unchanged — the ring is **not** touched | Chime only |
 | A session finishes its turn, nothing else pending | Solid, **dim**, that session's colour | Chime |
+| A session finishes its turn, something else already pending | Unchanged — the ring is **not** touched | Chime still plays |
 | You reply (typed or via the device), nothing else pending | Solid, dim, that session's colour — the ambient "you're working here" marker | — |
 | Cycling with the dial or double-press | Solid, full brightness, the newly-selected session's colour | Speaks its name (chime only if muted) |
 | Nothing pending, idle 10+ minutes | Off | — |

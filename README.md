@@ -189,7 +189,10 @@ above for the complete task-by-task build history.
 Before starting, ensure:
 - Home Assistant is running and accessible (default assumed URL is `http://homeassistant.local:8123`; override via credentials in Step 0)
 - You have a valid HA long-lived access token (created in HA UI: Settings → Developer Tools → Long-Lived Access Tokens)
-- VS Code window titles match the patterns `WindowFocus.psm1` looks for (see Step 4 / the note under Step 6) so `confirm-session.ps1` can focus the right window
+- VS Code window titles contain each project's folder name, which VS Code
+  does by default — `WindowFocus.psm1` derives its match pattern from the
+  session's own project (`Get-ProjectWindowPattern`), so no per-project
+  configuration is needed for `confirm-session.ps1` to find the right window
 
 ### Step 0: Credentials
 

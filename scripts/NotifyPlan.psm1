@@ -7,9 +7,10 @@ function Get-NotifyPlan {
         [Parameter(Mandatory)][int]$OtherPendingCount
     )
     # A pending session HOLDS SOLID at full brightness, with one flash on
-    # arrival. Never a sustained pulse: flash:'long' is a one-shot that
-    # reverts the light to its previous state after ~10s, so a "pulsing"
-    # notification would go dark on its own and be missed entirely.
+    # arrival. Never a sustained pulse: flash:'short' (see HaClient.psm1) is
+    # a one-shot that reverts the light to its previous state after ~10s, so
+    # a "pulsing" notification would go dark on its own and be missed
+    # entirely.
     switch ($Event) {
         'notification' {
             if ($OtherPendingCount -gt 0) {

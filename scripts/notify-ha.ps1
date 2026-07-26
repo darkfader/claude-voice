@@ -75,7 +75,15 @@ try {
                 if ($othersCount -eq 0) { Set-PendingCursor -SessionId $sessionId }
             }
         }
-        'stop'  { Clear-PendingSession -SessionId $sessionId }
+        'stop'  {
+            Clear-PendingSession -SessionId $sessionId
+            # Also mark this the active session: 'stop' lights the ring dim,
+            # and Invoke-IdleCheck fades based on activeSession/activeSince.
+            # Without this the dim ring a finished turn leaves behind has no
+            # timer attached and would glow indefinitely -- the exact
+            # overnight-glow case the idle timeout exists to prevent.
+            Set-ActiveSession -SessionId $sessionId
+        }
         'clear' {
             Clear-PendingSession -SessionId $sessionId
             Set-ActiveSession    -SessionId $sessionId

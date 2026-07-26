@@ -157,8 +157,17 @@ for the full design rationale.
 - **Task finishes** (`Stop` hook), nothing else pending: LED solid **dim**
   in the session's color, chime only, no speech — a finished task doesn't
   need narrating. If another session is already pending, the ring is left
-  alone entirely — a finished task must never take the ring away from one
-  that still needs the human.
+  alone entirely (a finished task must never take the ring away from one
+  that still needs the human) — but the **chime still plays** either way;
+  only the ring is conditional on `OtherPendingCount`. `notify-ha.ps1` also
+  marks this session as the active one (`Set-ActiveSession`) regardless of
+  whether the ring was actually touched, so whichever dim glow is showing
+  once nothing is pending always has a live idle-fade timer attached to it
+  — see the idle-fade note below. (This was a real bug until fixed: `stop`
+  used to only call `Clear-PendingSession`, so a dim ring left by a
+  finished turn had no timer watching it and could glow indefinitely if the
+  human walked away — the exact overnight-glow case the idle timeout exists
+  to prevent, on a device that lives in a bedroom.)
 - **Needs input** (`Notification` hook), nothing else pending: LED
   full-brightness **solid** in the session's color, with a single one-shot
   flash on arrival to catch the eye, chime, AND spoken summary naming the
