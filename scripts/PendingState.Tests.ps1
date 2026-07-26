@@ -13,41 +13,79 @@ Describe 'PendingState' {
         # real hooks. Observed in practice: consecutive full-suite runs giving
         # 6/6, 6/6, then 4/6.
         Set-PendingStateMutexName -Name "Global\ClaudeVoicePendingStateTest_$([guid]::NewGuid().ToString('N'))"
+        Set-PendingStateExpiryHours -Hours 4
     }
 
-    It 'returns an empty state when no file exists yet' {
+    It 'returns empty state when no file exists yet' {
         $state = Get-PendingState
-        $state.accounts.Count | Should -Be 0
+        $state.sessions.Count | Should -Be 0
         $state.cursor | Should -BeNullOrEmpty
+        $state.activeSession | Should -BeNullOrEmpty
     }
 
-    It 'adds a pending account with project and message' {
-        Set-PendingAccount -Account 'personal' -Project 'HomeAssistant' -Message 'fix bug'
-        $state = Get-PendingState
-        $state.accounts.personal.project | Should -Be 'HomeAssistant'
-        $state.accounts.personal.message | Should -Be 'fix bug'
-        $state.accounts.personal.since | Should -Not -BeNullOrEmpty
+    It 'adds a pending session with all its fields' {
+        Set-PendingSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant' -Message 'fix bug' -Color @(255,0,0) -Slot 0 -Ordinal 1
+        $s = (Get-PendingState).sessions.s1
+        $s.project | Should -Be 'HomeAssistant'
+        $s.cwd     | Should -Be 'C:/git/HomeAssistant'
+        $s.message | Should -Be 'fix bug'
+        $s.color   | Should -Be @(255,0,0)
+        $s.slot    | Should -Be 0
+        $s.ordinal | Should -Be 1
+        $s.since   | Should -Not -BeNullOrEmpty
     }
 
-    It 'clears a pending account' {
-        Set-PendingAccount -Account 'work' -Project 'sownet-app' -Message 'review PR'
-        Clear-PendingAccount -Account 'work'
-        (Get-PendingState).accounts.ContainsKey('work') | Should -BeFalse
+    It 'clears a pending session' {
+        Set-PendingSession -SessionId 's1' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
+        Clear-PendingSession -SessionId 's1'
+        (Get-PendingState).sessions.ContainsKey('s1') | Should -BeFalse
     }
 
-    It 'clearing the cursor account resets the cursor' {
-        Set-PendingAccount -Account 'personal' -Project 'p' -Message 'm'
-        Set-PendingCursor -Account 'personal'
-        Clear-PendingAccount -Account 'personal'
+    It 'clearing the cursor session resets the cursor' {
+        Set-PendingSession -SessionId 's1' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
+        Set-PendingCursor -SessionId 's1'
+        Clear-PendingSession -SessionId 's1'
         (Get-PendingState).cursor | Should -BeNullOrEmpty
     }
 
-    It 'clearing a different account leaves the cursor alone' {
-        Set-PendingAccount -Account 'personal' -Project 'p' -Message 'm'
-        Set-PendingAccount -Account 'work' -Project 'w' -Message 'm2'
-        Set-PendingCursor -Account 'work'
-        Clear-PendingAccount -Account 'personal'
-        (Get-PendingState).cursor | Should -Be 'work'
+    It 'clearing a different session leaves the cursor alone' {
+        Set-PendingSession -SessionId 's1' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
+        Set-PendingSession -SessionId 's2' -Project 'q' -Cwd 'd' -Message 'm' -Color @(4,5,6) -Slot 1 -Ordinal 1
+        Set-PendingCursor -SessionId 's2'
+        Clear-PendingSession -SessionId 's1'
+        (Get-PendingState).cursor | Should -Be 's2'
+    }
+
+    It 'tracks the active session and can clear it' {
+        Set-ActiveSession -SessionId 's9'
+        $st = Get-PendingState
+        $st.activeSession | Should -Be 's9'
+        $st.activeSince   | Should -Not -BeNullOrEmpty
+        Clear-ActiveSession
+        (Get-PendingState).activeSession | Should -BeNullOrEmpty
+    }
+
+    It 'drops sessions older than the expiry window' {
+        Set-PendingStateExpiryHours -Hours 4
+        Set-PendingSession -SessionId 'old' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
+        # Rewrite that entry's timestamp to 5 hours ago, bypassing the setter.
+        $path = Join-Path $TestDrive 'pending.json'
+        $raw = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+        $raw.sessions.old.since = (Get-Date).AddHours(-5).ToString('o')
+        $raw | ConvertTo-Json -Depth 6 | Set-Content $path
+        (Get-PendingState).sessions.ContainsKey('old') | Should -BeFalse
+    }
+
+    It 'keeps sessions inside the expiry window' {
+        Set-PendingStateExpiryHours -Hours 4
+        Set-PendingSession -SessionId 'fresh' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
+        (Get-PendingState).sessions.ContainsKey('fresh') | Should -BeTrue
+    }
+
+    It 'treats an old account-shaped file as empty rather than throwing' {
+        $path = Join-Path $TestDrive 'pending.json'
+        '{ "accounts": { "personal": { "project": "x" } }, "cursor": null }' | Set-Content $path
+        (Get-PendingState).sessions.Count | Should -Be 0
     }
 
     It 'throws when unable to acquire lock within timeout' {
@@ -94,7 +132,7 @@ Describe 'PendingState' {
             }
             (Test-Path $readyFile) | Should -BeTrue -Because 'the background job must actually hold the lock before the timeout assertion means anything'
 
-            { Set-PendingAccount -Account 'test' -Project 'p' -Message 'm' } |
+            { Set-PendingSession -SessionId 'test' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1 } |
                 Should -Throw -ExpectedMessage '*Timed out*'
         } finally {
             Set-Content -Path $releaseFile -Value 'go'
