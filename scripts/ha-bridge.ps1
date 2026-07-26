@@ -69,12 +69,21 @@ $conn = Get-HaConnection
 $stream = Connect-HaEventStream -Connection $conn
 Write-Host "ha-bridge connected to $($conn.Url)"
 
-while ($stream.Socket.State -eq 'Open') {
-    $msg = & $stream.Receive
-    if ($msg.type -ne 'event') { continue }
-    $data = $msg.event.data
-    if ($data.entity_id -eq 'event.home_assistant_voice_0932b4_button_press') {
-        $eventType = $data.new_state.attributes.event_type
-        if ($eventType) { Invoke-ButtonEvent -Connection $conn -EventType $eventType }
+$logPath = Join-Path $PSScriptRoot '..\state\ha-bridge.log'
+
+try {
+    while ($stream.Socket.State -eq 'Open') {
+        $msg = & $stream.Receive
+        if ($msg.type -ne 'event') { continue }
+        $data = $msg.event.data
+        if ($data.entity_id -eq 'event.home_assistant_voice_0932b4_button_press') {
+            $eventType = $data.new_state.attributes.event_type
+            if ($eventType) { Invoke-ButtonEvent -Connection $conn -EventType $eventType }
+        }
     }
+} catch {
+    $errorLine = "$(Get-Date -Format o) ha-bridge crashed: $_"
+    Add-Content -Path $logPath -Value $errorLine
+    Write-Warning $errorLine
+    exit 1
 }

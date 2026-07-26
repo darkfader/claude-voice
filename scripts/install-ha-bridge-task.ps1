@@ -4,5 +4,10 @@ $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument "-NoProfile -Win
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
 
-Register-ScheduledTask -TaskName 'ClaudeVoiceHaBridge' -Action $action -Trigger $trigger -Settings $settings -Description 'Watches HA Voice button/mute events for Claude Code session control' -Force
-Write-Host "Registered Scheduled Task 'ClaudeVoiceHaBridge' (runs at logon, restarts up to 3x on failure)."
+try {
+    Register-ScheduledTask -TaskName 'ClaudeVoiceHaBridge' -Action $action -Trigger $trigger -Settings $settings -Description 'Watches HA Voice button/mute events for Claude Code session control' -Force -ErrorAction Stop | Out-Null
+    Write-Host "Registered Scheduled Task 'ClaudeVoiceHaBridge' (runs at logon, restarts up to 3x on failure)."
+} catch {
+    Write-Error "Failed to register Scheduled Task 'ClaudeVoiceHaBridge': $_`nThis usually means the terminal isn't running as Administrator — Scheduled Task registration requires elevation. Re-run this script from an elevated PowerShell window."
+    exit 1
+}
