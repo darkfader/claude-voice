@@ -38,3 +38,52 @@ Describe 'Find-SessionWindow' {
         (Find-SessionWindow -Project 'my[test]proj' -Processes $procs).Id | Should -Be 42
     }
 }
+
+Describe 'Select-OwningWindowPid' {
+    It 'returns the nearest ancestor that owns a window' {
+        $chain = @(
+            @{ ProcessId = 100; Name = 'pwsh.exe';     HasWindow = $false }
+            @{ ProcessId = 200; Name = 'claude.exe';   HasWindow = $false }
+            @{ ProcessId = 300; Name = 'Code.exe';     HasWindow = $false }
+            @{ ProcessId = 400; Name = 'Code.exe';     HasWindow = $true  }
+            @{ ProcessId = 500; Name = 'explorer.exe'; HasWindow = $true  }
+        )
+        Select-OwningWindowPid -Chain $chain | Should -Be 400
+    }
+
+    It 'does not skip past a windowed terminal to reach explorer' {
+        # A session in Windows Terminal has no Code.exe ancestor at all, and
+        # explorer.exe is an ancestor of nearly everything -- a "prefer
+        # Code.exe" or last-match rule would focus the desktop instead.
+        $chain = @(
+            @{ ProcessId = 100; Name = 'pwsh.exe';            HasWindow = $false }
+            @{ ProcessId = 200; Name = 'WindowsTerminal.exe'; HasWindow = $true  }
+            @{ ProcessId = 300; Name = 'explorer.exe';        HasWindow = $true  }
+        )
+        Select-OwningWindowPid -Chain $chain | Should -Be 200
+    }
+
+    It 'returns null when no ancestor owns a window' {
+        $chain = @(
+            @{ ProcessId = 100; Name = 'pwsh.exe';   HasWindow = $false }
+            @{ ProcessId = 200; Name = 'claude.exe'; HasWindow = $false }
+        )
+        Select-OwningWindowPid -Chain $chain | Should -BeNullOrEmpty
+    }
+
+    It 'returns null for an empty chain' {
+        Select-OwningWindowPid -Chain @() | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-OwningWindowPid (live)' {
+    It 'finds a real windowed ancestor of this test process' {
+        # Integration check: the walk must work against real Win32_Process
+        # data, not just the pure selection rule. Pester runs under a console
+        # or editor, so some ancestor owns a window.
+        $found = Get-OwningWindowPid
+        $found | Should -Not -BeNullOrEmpty
+        (Get-Process -Id $found -ErrorAction SilentlyContinue).MainWindowHandle |
+            Should -Not -Be ([IntPtr]::Zero)
+    }
+}
