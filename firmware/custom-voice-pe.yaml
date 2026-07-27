@@ -9,3 +9,53 @@
 packages:
   upstream: !include home-assistant-voice-pe/home-assistant-voice.factory.yaml
   overlay: !include overlay.yaml
+
+# The dial's rotation handlers live HERE, not in overlay.yaml, and the split is
+# load-bearing.
+#
+# ESPHome merges package lists by CONCATENATION, so handlers declared in
+# overlay.yaml are appended to the stock ones rather than replacing them --
+# verified with `esphome config`, which showed stock control_volume/control_hue
+# running first and ours second. Bare rotation would still have changed volume.
+#
+# `on_clockwise: !remove` in overlay.yaml strips the stock handlers (also
+# verified), but a key cannot be both removed and assigned in the same mapping.
+# The main config is merged AFTER all packages, so the removal lands first and
+# these definitions are then added to the now-empty triggers.
+#
+# Behaviour: bare rotation fires esphome.claude_dial and does nothing on-device
+# -- deliberately not even setting dial_touched, whose volume-bar animation
+# would paint over the per-session colour on the LED ring. Centre-held rotation
+# drives volume via claude_held_volume (defined in overlay.yaml), which also
+# sets group_volume_changed so releasing the button does not additionally fire
+# the single-click action.
+sensor:
+  - id: !extend dial
+    on_clockwise:
+      - if:
+          condition:
+            binary_sensor.is_off: center_button
+          then:
+            - homeassistant.event:
+                event: esphome.claude_dial
+                data:
+                  direction: cw
+          else:
+            - lambda: id(dial_touched) = true;
+            - script.execute:
+                id: claude_held_volume
+                increase_volume: true
+    on_anticlockwise:
+      - if:
+          condition:
+            binary_sensor.is_off: center_button
+          then:
+            - homeassistant.event:
+                event: esphome.claude_dial
+                data:
+                  direction: ccw
+          else:
+            - lambda: id(dial_touched) = true;
+            - script.execute:
+                id: claude_held_volume
+                increase_volume: false

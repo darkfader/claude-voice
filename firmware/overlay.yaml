@@ -40,6 +40,61 @@ micro_wake_word:
     - model: models/hey_claude.json
       id: hey_claude
 
+# 3. Repurposes the dial: bare rotation is now a Claude session switcher and
+#    volume moves to centre-button-and-rotate.
+#
+#    Bare rotation fires the `esphome.claude_dial` Home Assistant event and
+#    does nothing on-device. It deliberately does NOT read the rotation
+#    sensor's counter any more: once volume also lives on the dial, both
+#    gestures drive the same counter and are indistinguishable to a consumer
+#    watching it. Delta-tracking does not rescue that either, because both
+#    volume scripts end with `sensor.rotary_encoder.set_value: 0`, and a reset
+#    from a nonzero value reads as a large negative delta (a spurious
+#    backwards cycle). An explicit event makes the two gestures unambiguous by
+#    construction and carries the direction in its payload.
+#
+#    Bare rotation also deliberately does NOT set `dial_touched`. That flag
+#    drives `control_leds_dial_touched`, the volume-bar animation, which
+#    paints over the per-session colour the ring is showing. Centre-held
+#    rotation still sets it, where the bar is the correct display.
+#
+#    Centre-held rotation drives volume via claude_held_volume below. Upstream
+#    routed that gesture to `control_hue` (or `control_group_volume` when a
+#    group media player was playing); hue control is dropped on purpose, since
+#    here hue means *which session* and a manually-set hue fights that.
+script:
+  - id: claude_held_volume
+    mode: restart
+    parameters:
+      increase_volume: bool
+    then:
+      # group_volume_changed is what stops the button's RELEASE from also
+      # firing the single-click action -- see the on_multi_click guard in
+      # home-assistant-voice.yaml:
+      #   !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed)
+      # Upstream's control_group_volume sets this itself; control_volume never
+      # needed to, because it used to be a bare-rotation gesture. Without it,
+      # every volume nudge would start the assistant or stop the music.
+      - lambda: id(group_volume_changed) = true;
+      - if:
+          condition:
+            media_player.is_playing:
+              id: sendspin_group_media_player
+          then:
+            - script.execute:
+                id: control_group_volume
+                increase_volume: !lambda return increase_volume;
+          else:
+            - script.execute:
+                id: control_volume
+                increase_volume: !lambda return increase_volume;
+      # 1s matches the firmware's own click window ("ON for at most 1s"), so
+      # the flag outlives any release that could still register as a click.
+      - delay: 1s
+      - lambda: id(group_volume_changed) = false;
+
 sensor:
   - id: !extend dial
     name: "Dial Rotation"
+    on_clockwise: !remove
+    on_anticlockwise: !remove
