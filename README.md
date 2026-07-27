@@ -2,6 +2,13 @@
 
 Claude Code ↔ Home Assistant Voice integration.
 
+> **This is a personal project, built for one person's desk and one device.**
+> Behaviour changes whenever the author feels like it — gestures get
+> reassigned, colours and timings get retuned, features appear and disappear
+> without deprecation or migration. There is no stability guarantee, no
+> versioning policy, and no promise that today's controls mean the same thing
+> tomorrow. Anything here worth relying on, fork.
+
 - **Using it day to day → [`docs/user-guide.md`](docs/user-guide.md)** — what
   the lights and sounds mean, the button/dial controls, and how to see what
   happened.
