@@ -114,7 +114,14 @@ try {
 
     switch ($plan.Led.Action) {
         'set' {
-            $brightness = if ($plan.Led.Bright) { 255 } else { 60 }
+            # 255 = a session needs you; 100 = the dim ambient "you're working
+            # here" marker. The GAP between them is load-bearing: both states
+            # use the same per-session colour, so brightness is the only thing
+            # distinguishing them. Ambient must stay clearly below pending --
+            # much above ~140 and the two become hard to tell apart at a
+            # glance. (Was 60, raised to 100: at 24% a mid-hue read as a murky
+            # smudge rather than a colour.)
+            $brightness = if ($plan.Led.Bright) { 255 } else { 100 }
             Invoke-HaLed -Connection $conn -Rgb $rgb -Brightness $brightness -Flash:$plan.Led.Flash | Out-Null
             Set-DisplayedSession -SessionId $sessionId
         }
