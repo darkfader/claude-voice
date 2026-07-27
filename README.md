@@ -16,10 +16,12 @@ Pure logic (no I/O, fully unit-tested — these hold the decision-making):
 - `scripts/NotifyPlan.psm1` — `Get-NotifyPlan`: given an event, a session's
   display name, message, mute state and how many *other* sessions are
   pending, decides what the LED, sound and speech should be.
-- `scripts/ButtonAction.psm1` — `Get-ButtonAction` / `Get-DialCycleTarget`:
-  decides what a button press or dial turn should do, given what's pending.
-  Cycling always follows arrival order (oldest first), never alphabetical —
-  session ids are random, so sorting by name would be meaningless.
+- `scripts/ButtonAction.psm1` — `Get-ButtonAction` / `Get-KnownCycleTarget`:
+  decides what a button press or dial turn should do. The button acts on
+  *pending* sessions; the dial cycles *known* ones (anything seen in the last
+  4 hours) in stable `firstSeen` order, in either direction, wrapping at both
+  ends. Never alphabetical — session ids are random, so sorting by name would
+  be meaningless.
 - `scripts/WindowFocus.psm1` — `Get-ProjectWindowPattern` /
   `Find-SessionWindow`: maps a session's own project name to its VS Code
   window. Derived from the session, not a hardcoded pattern — adding a new
@@ -149,10 +151,44 @@ If reproducing an identical build later matters, pin to that version:
 ### Building and flashing — PowerShell only
 
 **All `esphome compile` / `esphome run` / `esphome upload` commands MUST be
-run from native PowerShell — never from the Bash/Git-Bash tool.** ESP-IDF's
-installer detects `$env:MSYSTEM` (which Git Bash sets and PowerShell does
-not) and refuses to run under it. This isn't a preference, it's a hard
-requirement confirmed during Plan 2 Task 1.
+run from native PowerShell — never from the Bash/Git-Bash tool.** ESP-IDF
+detects `$env:MSYSTEM` (which Git Bash sets and PowerShell does not). This
+isn't a preference, it's a hard requirement confirmed during Plan 2 Task 1.
+
+**It does not fail loudly — that is the dangerous part.** Under Git Bash it
+prints one easily-missed line:
+
+```
+MSys/Mingw is no longer supported. ... or continue at your own risk.
+```
+
+and then produces a **no-op build**: `main.cpp` is regenerated with your
+changes, `firmware.ota.bin` gets a fresh file mtime, PlatformIO prints a
+plausible RAM/Flash summary, and it reports `Successfully compiled program`
+— but the binary is byte-identical to the previous build. `esphome upload`
+then cheerfully flashes the *old* firmware and reports `OTA successful`.
+Every signal says it worked. Observed for real during Plan 3 Task 1: two
+OTAs, a genuine device reboot, and HA reconnecting, all while the device
+kept running the previous day's image.
+
+**Always verify what actually got built** — file mtimes lie, because they
+are refreshed even by the no-op path. The compile timestamp baked into the
+binary is the truth:
+
+```powershell
+$txt = [System.Text.Encoding]::ASCII.GetString(
+    (Get-Content .esphome/build/home-assistant-voice/build/firmware.ota.bin -AsByteStream -Raw))
+[regex]::Matches($txt, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d') |
+    ForEach-Object { $_.Value } | Select-Object -Unique
+```
+
+and confirm the running device agrees, via `esphome logs`:
+
+```
+[I][app:151]: ESPHome version 2026.7.2 compiled on 2026-07-27 18:09:26 +0200
+```
+
+If those two dates don't match each other and today, the flash didn't take.
 
 ```powershell
 # Compile only (no device needed) -- confirms the overlay still builds

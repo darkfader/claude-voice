@@ -35,7 +35,7 @@ other.
 | A session finishes its turn or you reply, something else already pending | Ring **moves to the oldest remaining pending session**, solid full brightness, no flash — it's a hand-off, not a new arrival | Chime still plays (typed reply: silent) |
 | You jump to a session or dismiss it from the device (long-press/triple-press), nothing else pending | **Off** | — |
 | You jump to a session or dismiss it from the device (long-press/triple-press), something else pending | Ring moves to the oldest remaining pending session, solid full brightness, no flash | — |
-| Cycling with the dial or double-press | Solid, full brightness, the newly-selected session's colour | Speaks its name (chime only if muted) |
+| Cycling with the dial | Solid, the newly-selected session's colour — full brightness if it's pending, dim if it's merely known | Speaks its name once you stop turning (chime only if muted) |
 | Nothing pending, idle 10+ minutes | Off | — |
 
 ### It holds SOLID — it never pulses
@@ -95,18 +95,31 @@ Once the bridge is running:
 
 | Gesture | Action |
 |---|---|
-| **Double-press** | Cycle to the next pending session, oldest-arrived first (speaks its name) |
-| **Long-press** | Jump to the selected session — focuses its VS Code window and clears its pending light. Types **nothing**; you read and reply yourself |
+| **Rotate the dial** | Cycle sessions — **two clicks per session**. Clockwise goes forward, anticlockwise back, and it wraps. The ring shows the selected session's colour immediately; ~400ms after you stop turning, that session's window comes to the front and its name is spoken |
+| **Double-press** | Activate the selected session — focus its window, leave its pending light lit. Acts on whatever the dial selected, pending or not |
+| **Long-press** | Jump to the selected session — focuses its VS Code window **and** clears its pending light. Types **nothing**; you read and reply yourself |
 | **Triple-press** | Dismiss the selected session without replying |
-| **Rotate the dial** | Same cycling as double-press — but only when **2 or more** sessions are pending |
+| **Single press** | Unchanged from stock: talk to the assistant, or stop music / an announcement / a ringing timer |
+| **Hold the centre button and rotate** | Volume |
 
-Long-press works with no prior press when exactly one session is pending —
-there's only one thing it could mean.
+Long-press and triple-press work with no prior selection when exactly one
+session is **pending** — there's only one thing they could mean. Double-press
+follows the same idea but against **known** sessions, since that's the set the
+dial moves through.
 
-**The dial is still your volume knob.** With 0 or 1 sessions pending — i.e.
-almost always — rotating it just changes volume as it always has. Cycling only
-engages when there are 2+ pending sessions to choose between, which is the only
-situation where cycling means anything.
+**The dial is a session switcher, not a volume knob.** Volume moved to
+centre-button-and-rotate. This is the whole point of the change: two
+simultaneously-pending sessions is a rare state, so gating cycling on it left
+the dial doing nothing useful almost all of the time.
+
+**It cycles every session it has seen recently, not just pending ones.** Any
+session that has fired a hook in the last 4 hours is in the rotation, in the
+order it first appeared — a stable order, so the same turn always lands in the
+same place. Brightness tells you which ones actually want something: full
+brightness for a pending session, dim for one that is merely known.
+
+Rotating with nothing known does nothing at all. It does not fall back to
+volume — the firmware no longer routes bare rotation there.
 
 ## Seeing what happened
 
@@ -164,13 +177,20 @@ model actually received.
 ### Bridge problems
 
 ```powershell
-Get-Content claude-voice/state/ha-bridge.log -Tail 20   # only exists after a failure
+Get-Content claude-voice/state/ha-bridge.log -Tail 30
 ```
 
-The bridge writes here when it loses its connection or a handler throws. **If
-this file doesn't exist, nothing has gone wrong** — it isn't a routine activity
-log, only a fault log. The bridge reconnects on its own with backoff, so
-occasional entries after an HA restart are expected and self-healing.
+Two levels share this file. `[info]` is routine activity — connections, each
+dial rotation with the session it selected, each focus, each button gesture.
+`[fault]` is something going wrong. **This is the first place to look when a
+rotation doesn't land where you expected**, because it records what the bridge
+thought you selected.
+
+It is capped: if it exceeds 1 MB, the bridge keeps the last 2000 lines at its
+next start.
+
+The bridge reconnects on its own with backoff, so occasional `[fault]` entries
+after an HA restart are expected and self-healing.
 
 ### Your Claude Code sessions
 
@@ -197,5 +217,7 @@ won't appear in the app.
 | Warning: *"Entity not found: input_boolean.claude_notifications_enabled"* | Same — the helper doesn't exist yet. Harmless: the code deliberately fails open and still notifies. |
 | Device speaks but plays no chime | `chime.wav` never reached HA's media folder — README Step 2 |
 | It names the wrong project | Display name comes from the last path segment of the hook payload's `cwd`; an unusual folder name or symlink can produce something unexpected |
-| Dial cycles when you only wanted volume | Only possible with 2+ sessions pending; resolve or dismiss one |
+| Dial changes volume instead of switching sessions | Custom firmware isn't flashed — the device is running stock. Re-flash from `claude-voice/firmware/` |
+| Dial does nothing at all | No sessions known yet (nothing has fired a hook in 4 hours), or the bridge isn't running |
+| Rotation switches sessions but no window comes forward | Focus failed — check `ha-bridge.log` for "focus failed"; the window title didn't match the project |
 | "Hey Claude" triggers by accident | Its sensitivity is fixed at flash time and **not** adjustable by the device's sensitivity control — see [`home-assistant-voice-device.md`](home-assistant-voice-device.md) |

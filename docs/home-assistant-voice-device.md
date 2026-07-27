@@ -69,30 +69,18 @@ for the full design rationale.
 ### Physical controls
 
 - **Rotary dial** (`platform: rotary_encoder`, GPIO16/18) with an
-  integrated push-button ("center button"). Stock behavior: rotate alone →
-  volume up/down; hold the center button while rotating → LED ring hue
-  change instead. **This stock behavior is unchanged and still the normal,
-  everyday behavior of the dial** — nothing about Mode 2 or the
-  `ha-bridge.ps1` dial-cycling feature below alters it.
-  - **Rotation is now exposed to Home Assistant**, as of Mode 2's custom
-    firmware overlay (`claude-voice/firmware/overlay.yaml`): confirmed real
-    entity ID is `sensor.bedroom_home_assistant_voice_0932b4_dial_rotation`
-    (area-prefixed, not the non-prefixed form originally assumed during
-    planning). In stock firmware this sensor has no `name:`, so it's
-    internal-only, consumed entirely by on-device volume/hue scripts; the
-    overlay adds just a `name:` via a `!extend` override, leaving pins,
-    resolution, and the volume/hue scripts byte-identical to upstream. Live
-    query at time of writing: state `unknown` (device idle, dial untouched
-    since boot) — a reminder that this sensor legitimately reports
-    non-numeric states (`unknown`/`unavailable`) as well as numbers, which
-    `ha-bridge.ps1` must and does guard against (see below).
-  - **`ha-bridge.ps1` only ever acts on this sensor's rotation when 2+
-    Claude Code sessions are pending** (final review, Plan 2) — the
-    specific case the dial-cycling feature exists for. With 0 or 1
-    sessions pending, i.e. every ordinary day, rotating the dial does
-    nothing beyond its stock volume/hue behavior; the bridge doesn't touch
-    the cursor, LED, or state at all. See "Control surfaces" below for the
-    full behavior once 2+ sessions are pending.
+  integrated push-button ("center button"), **24 detents per revolution**.
+  Stock behavior was: rotate alone → volume up/down; hold the center button
+  while rotating → LED ring hue. **Custom firmware changes both** — see
+  "Dial behaviour (custom firmware)" below. Bare rotation is now a Claude
+  session switcher and volume moved to centre-held rotation.
+  - The rotation sensor `sensor.bedroom_home_assistant_voice_0932b4_dial_rotation`
+    still exists and still counts, but **nothing reads it any more**. It was
+    unusable as a gesture source once volume also lived on the dial: both
+    gestures drive the same counter, and both volume scripts end with
+    `sensor.rotary_encoder.set_value: 0`, so a reset from a nonzero value
+    reads as a large negative delta. The bridge consumes an explicit
+    `esphome.claude_dial` event instead.
   - The center-button click IS exposed, as part of the same button-press
     event entity below (best guess — the "center button" binary_sensor
     referenced in the volume-control lambda is very likely the same
@@ -229,64 +217,63 @@ for the full design rationale.
   submode is full session control with zero spoken output.
 - Mode 2 (wake words) needs no special handling — mic is physically off,
   wake-word detection is already impossible.
-- Dial-cycling and `double_press` both speak the newly-selected session's
-  name via TTS when unmuted, and chime instead of speaking when muted
-  (`Invoke-DialRotationEvent` / the `select` branch of `Invoke-ButtonEvent`
-  in `ha-bridge.ps1`) — the two surfaces behave identically here. (Plan 2's
-  final review originally made dial-cycling LED-only with no spoken name
-  at all, to avoid queuing overlapping announce calls across rapid
-  detents; the debounce added at the same time — see below — made a
-  spoken name safe to add back, since a whole gesture now collapses into
-  one action instead of one call per detent.)
+- Dial-cycling speaks the selected session's name via TTS when unmuted, and
+  chimes instead when muted (`Invoke-DialSettleCheck` in `ha-bridge.ps1`);
+  `double_press` chimes on a successful activate. Speech happens on
+  **settle**, not per detent — an earlier design spoke on every detent,
+  which queued overlapping 10-second announce calls and stalled the
+  bridge's event loop. The 400ms settle window is what makes a spoken name
+  safe: a whole gesture collapses into one utterance.
 
 ### Control surfaces (device → Claude Code session)
 
-- **Primary, now that Mode 2 firmware is built and flashed**: rotate the
-  dial to cycle through pending sessions, long-press (center-button click)
-  to jump to the selected session, triple-press to dismiss without
-  responding. Long-press is deliberately **"focus", not "confirm"** — it
-  brings the session's VS Code window to the front and clears its pending
-  light, but types nothing (`confirm-session.ps1 -FocusOnly`). The
-  `Notification` hook fires mainly on permission prompts, so auto-sending a
-  reply from across the room would mean approving something unseen; a
-  deliberate typed reply happens at the desk instead (by hand, or via the
-  optional Stream Controller page below). Two important corrections from
-  the original design, both added after Plan 2's final review:
-  - **Gated to 2+ pending sessions.** The dial has always controlled
-    speaker volume (rotate alone) and LED-ring hue (rotate while holding
-    the center button) — that's its normal, everyday behavior, and every
-    rotation fires this same HA sensor regardless of intent.
-    `ha-bridge.ps1`'s dial-cycling code only ever acts when 2+ sessions are
-    actually pending (the specific case it exists for); with 0 or 1
-    pending, ordinary volume/hue turns are completely unaffected — no
-    cursor mutation, no LED call, no sound. This also incidentally fixed a
-    bug where, with exactly 1 session pending, the old code re-announced
-    that session's name on every single detent forever.
-  - **LED update is not actually live.** The design originally promised the
-    LED updates "immediately, live, as you turn it." That isn't achievable
-    given the current firmware: the stock `control_leds` lambda treats the
-    dial as "recently touched" for about a second after the last detent
-    and drives the same physical LED strip with its own "Volume Display"
-    effect during that window, overwriting our LED call almost
-    immediately. The update only becomes visible once that window elapses.
-    Rapid detents from a single physical turn are also debounced into one
-    action (~800ms) — one LED update and one spoken name **per gesture**,
-    not per detent (an earlier version spoke on every single detent, which
-    could queue up many overlapping 10-second announce calls and stall the
-    bridge's event loop for a long time).
-  - Cycling order is **arrival order (oldest-pending first)**, from
-    `Get-DialCycleTarget` sorting sessions by their `since` timestamp — not
-    alphabetical. Session ids are random, so sorting by name would produce
-    a meaningless rotation; sorting by arrival time is the one order a
-    human can actually predict.
-- **Fallback, stock firmware, always available**: `double_press`
-  substitutes for dial rotation — same cursor, same arrival-order cycling,
-  same spoken session name via TTS (there's no working live LED preview
-  during rotation to key off of instead — see above, and both surfaces
-  speak identically regardless). `long_press`/`triple_press` behave
-  identically either way. Both surfaces are live simultaneously now —
-  `double_press` isn't a stopgap waiting on firmware, it's a standing
-  alternative.
+- **Primary**: rotate the dial to cycle sessions, long-press
+  (center-button click) to jump to the selected session, triple-press to
+  dismiss without responding. Long-press is deliberately **"focus", not
+  "confirm"** — it brings the session's VS Code window to the front and
+  clears its pending light, but types nothing
+  (`confirm-session.ps1 -FocusOnly`). The `Notification` hook fires mainly
+  on permission prompts, so auto-sending a reply from across the room would
+  mean approving something unseen; a deliberate typed reply happens at the
+  desk instead (by hand, or via the optional Stream Controller page below).
+  - **Two detents make one session step.** 24 detents per revolution
+    against 12 LEDs means 2 detents is exactly one LED position, and one
+    step per detent would be far too twitchy for a short session list — a
+    small flick would blow past the whole thing. Accumulation lives in
+    `ha-bridge.ps1` (`$script:DialDetentsPerStep`), not the firmware, so it
+    is tunable without a reflash; the firmware has no notion of how many
+    sessions exist. A change of direction resets the accumulator, so a
+    cw-then-ccw wobble does not bank half a step.
+  - **The ring updates per step; focus waits for the dial to settle.** Each
+    step repaints the ring immediately, but the window switch fires once,
+    400ms after the last detent — turning three steps gives one window
+    switch, not three. The spoken session name also happens on settle.
+  - **The LED is now genuinely visible during rotation.** It previously was
+    not: the stock `control_leds` lambda treated the dial as "recently
+    touched" for about a second after the last detent and drove the same
+    strip with its own "Volume Display" effect, overwriting our LED call.
+    Custom firmware stops setting `dial_touched` on bare rotation, so that
+    animation no longer runs and the per-session colour stays on screen.
+  - **No 2+ pending gate.** The dial cycles every session seen in the last
+    4 hours, pending or not. The old gate existed because the dial was also
+    the volume knob, so cycling had to stay out of the way; volume has
+    moved, and a switcher that only worked when two things happened to be
+    pending was inert almost always.
+  - Cycling order is **`firstSeen` order over the `known` map**, from
+    `Get-KnownCycleTarget` — stable, not most-recently-used. MRU suits
+    Alt-Tab, where the list is invisible; on a physical dial it means the
+    list reorders under your fingers, so the same rotation stops landing in
+    the same place.
+- **`double_press` activates the selected session** — focuses its window
+  and leaves its pending light lit. It no longer cycles; the dial owns
+  that, which is precisely what freed the gesture. The difference from
+  long-press is that long-press also clears.
+  - It resolves against the **`known`** map, not `sessions`, unlike
+    long/triple-press. The dial sets the cursor from `known`, so resolving
+    against pending sessions would ignore the dial's selection outright —
+    and with exactly one session pending it would silently activate that
+    one instead of the one the ring is showing. `Get-ButtonAction` takes
+    `-KnownSessions` for this, and only `double_press` consults it.
 - **Optional, richer**: a Stream Controller ("Soomfon", StreamDock/HotSpot
   platform) macro deck already on this PC, with native plugins for HA
   control, VS Code terminal injection, and window-focus/switch-to — a
@@ -313,3 +300,60 @@ for the full design rationale.
   is ambient conversation, not session approval.
 - Only needs to work reliably for one person's voice — no multi-speaker
   robustness tuning during training.
+
+## Dial behaviour (custom firmware)
+
+Bare rotation fires the Home Assistant event `esphome.claude_dial` with
+`data.direction` of `cw` or `ccw`, and does nothing on-device. Volume lives
+on centre-button-and-rotate.
+
+The `sensor…dial_rotation` entity still exists and still counts, but nothing
+reads it any more. Both volume scripts reset it to `0` about a second after
+the last detent, which is why the old counter-watching approach needed a
+zero-sentinel skip — the event carries the gesture unambiguously instead.
+
+Rotation no longer sets the `dial_touched` flag, so the firmware's volume-bar
+animation no longer paints over the ring. Session colours stay visible while
+you turn the dial. Centre-held rotation still sets it, where the bar is the
+correct display.
+
+Centre-held rotation sets `group_volume_changed` for one second afterwards.
+That flag is what stops releasing the button from also firing the
+single-click action — without it, every volume nudge would start the
+assistant or stop the music on release.
+
+**LED hue control is gone.** Centre-held rotation used to set the ring's hue;
+volume displaced it. Nothing preserves it, deliberately: here hue means
+*which session* and brightness means *attention*, so a manually-set hue
+fought that scheme and would be overwritten by the next notification anyway.
+
+### How the overlay overrides the handlers
+
+ESPHome merges package lists by **concatenation**, so handlers declared in
+`overlay.yaml` are *appended* to the stock ones rather than replacing them —
+verified with `esphome config`, which showed stock `control_volume` and
+`control_hue` running first and ours second. Bare rotation would still have
+changed volume.
+
+`on_clockwise: !remove` strips the stock handlers cleanly, but a key cannot
+be both removed and assigned in the same mapping. So the two halves are split
+across the merge order:
+
+- `overlay.yaml` (a package) carries the `!remove` tags and the
+  `claude_held_volume` script.
+- `custom-voice-pe.yaml` (the main config, merged **after** all packages)
+  carries the replacement handlers.
+
+Check the merged result with `esphome config custom-voice-pe.yaml` after any
+change here — the failure mode is silent, and looks exactly like the feature
+simply not working.
+
+### There is no touch sensor
+
+The device has exactly two physical inputs: the rotary encoder (`GPIO16` /
+`GPIO18`) and `center_button` (`GPIO0`). There is no capacitive touch
+hardware — no `esp32_touch` component, no touch pads.
+
+The `dial_touched` global is easy to misread as one. It is a
+rotation-recency flag: set `true` when the encoder turns, cleared about a
+second later, and used only to decide whether to draw the volume bar.
