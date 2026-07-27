@@ -315,20 +315,42 @@ function Register-KnownSession {
     param(
         [Parameter(Mandatory)][string]$SessionId,
         [Parameter(Mandatory)][string]$Project,
-        [Parameter(Mandatory)][string]$Cwd
+        [Parameter(Mandatory)][string]$Cwd,
+        # Pid of the window this session runs inside (VS Code, Windows
+        # Terminal, ...), resolved by the hook walking its own process tree.
+        # Refreshed on every registration, not just the first: the session
+        # outlives its window if the editor is restarted, and a stale pid
+        # would focus nothing or, worse, whatever process reused the number.
+        [int]$WindowPid = 0,
+        # Short spoken name derived from the session's opening message. Set
+        # once, on first registration: it describes what the thread is about,
+        # which does not change, and re-deriving it per hook would both cost a
+        # transcript read every time and risk the name drifting mid-session.
+        [AllowEmptyString()][string]$Title = ''
     )
     Invoke-WithPendingStateLock {
         $state = Get-PendingState
         $now   = (Get-Date).ToString('o')
         if ($state.known.ContainsKey($SessionId)) {
             $state.known[$SessionId].lastSeen = $now
+            if ($WindowPid -gt 0) { $state.known[$SessionId].windowPid = $WindowPid }
+            # Backfill only. Claude Code generates its title a few turns in, so
+            # a session registered on its very first hook has none yet; once
+            # set, it is left alone so the spoken name cannot drift mid-thread.
+            if ($Title -and -not $state.known[$SessionId].title) {
+                $state.known[$SessionId].title = $Title
+            }
         } else {
-            # No -TakenSlots: this is the session's BASE colour. Collision
-            # nudging is exclusively a pending-session concern and stays in
-            # Register-PendingNotification, so a nudged session's `sessions`
-            # colour and its `known` colour can legitimately differ -- the
-            # ring uses whichever matches what it is currently showing.
-            $slot = Resolve-SessionColorSlot -ProjectPath $Cwd
+            # Nudge against every OTHER known session's slot. Without this,
+            # two sessions in the same folder hash to the same slot and are
+            # indistinguishable on the ring -- which defeats the dial, since
+            # colour is the only thing identifying what you have selected.
+            # The first session in a project still gets that project's base
+            # colour (stable across restarts, as required); only siblings are
+            # pushed off it, and the hue slots are golden-angle spaced so a
+            # nudged sibling is obviously a different colour, not a near-miss.
+            $takenSlots = @($state.known.Values | Where-Object { $null -ne $_.slot } | ForEach-Object { $_.slot })
+            $slot = Resolve-SessionColorSlot -ProjectPath $Cwd -TakenSlots $takenSlots
             $ords = @($state.known.Values | Where-Object { $_.project -eq $Project } | ForEach-Object { $_.ordinal })
             $state.known[$SessionId] = @{
                 project   = $Project
@@ -336,6 +358,8 @@ function Register-KnownSession {
                 color     = ConvertFrom-HueSlot -Slot $slot
                 slot      = $slot
                 ordinal   = Get-SessionOrdinal -TakenOrdinals $ords
+                windowPid = $WindowPid
+                title     = $Title
                 firstSeen = $now
                 lastSeen  = $now
             }

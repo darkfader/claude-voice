@@ -436,3 +436,42 @@ Describe 'known session registry' {
         (Get-PendingState).cursor | Should -BeNullOrEmpty
     }
 }
+
+Describe 'known session colour distinctness' {
+    BeforeEach {
+        $script:distinctPath = Join-Path $TestDrive 'distinct.json'
+        if (Test-Path $script:distinctPath) { Remove-Item -Path $script:distinctPath -Force }
+        Set-PendingStatePath -Path $script:distinctPath
+        Set-PendingStateMutexName -Name "Global\ClaudeVoiceDistinctTest_$([guid]::NewGuid().ToString('N'))"
+        Set-PendingStateExpiryHours -Hours 4
+    }
+
+    It 'gives two sessions in the SAME folder different colours' {
+        # The dial identifies the selected session by ring colour alone, so
+        # same-folder siblings sharing a colour makes the whole feature
+        # unreadable. Regression guard for exactly that.
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        Register-KnownSession -SessionId 's2' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        $k = (Get-PendingState).known
+        $k['s1'].slot | Should -Not -Be $k['s2'].slot
+        ($k['s1'].color -join ',') | Should -Not -Be ($k['s2'].color -join ',')
+    }
+
+    It 'still gives the first session of a project its stable base colour' {
+        # Stability across restarts was an explicit requirement: the FIRST
+        # session in a project must keep the path-derived colour, and only
+        # siblings get nudged off it.
+        $base = ConvertFrom-HueSlot -Slot (Resolve-SessionColorSlot -ProjectPath 'C:/git/HomeAssistant')
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        ((Get-PendingState).known['s1'].color -join ',') | Should -Be ($base -join ',')
+    }
+
+    It 'gives three same-folder sessions three distinct colours' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        Register-KnownSession -SessionId 's2' -Project 'P' -Cwd 'C:/git/P'
+        Register-KnownSession -SessionId 's3' -Project 'P' -Cwd 'C:/git/P'
+        $k = (Get-PendingState).known
+        @($k['s1'].slot, $k['s2'].slot, $k['s3'].slot) | Select-Object -Unique |
+            Should -HaveCount 3
+    }
+}
