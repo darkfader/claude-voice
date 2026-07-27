@@ -32,14 +32,29 @@ Pure logic (no I/O, fully unit-tested — these hold the decision-making):
   collide when their sessions are pending simultaneously, and composes the
   spoken/display name (with an ordinal suffix for repeat sessions in the
   same project).
+- `scripts/AmbientState.psm1` — `Test-AmbientIdleExpired`: pure decision for
+  whether the dim ambient indicator has been idle long enough to fade to
+  off. Pending always outranks active, and an absent/unparseable
+  `activeSince` never expires anything.
 
 I/O and side effects (verified live rather than unit-tested, since they talk
 to hardware, HTTP and the Windows desktop):
 - `scripts/HaClient.psm1` — thin wrapper around the HA REST API. Single source
   of HA credentials via `Get-HaConnection` (see Step 0).
 - `scripts/PendingState.psm1` — tracks which sessions are waiting on input,
-  in `state/pending.json`, serialised across concurrent hook processes by a
-  named mutex.
+  which one is active (ambient indicator), and which one the ring is
+  currently displaying, in `state/pending.json`. Writes are atomic
+  (temp-file + rename) so an unlocked reader can never observe a torn
+  write, and serialised across concurrent hook processes by a named,
+  reentrant mutex. `Register-PendingNotification` / `Resolve-PendingSession`
+  are compound mutators that read, derive (colour slot, ordinal, how many
+  *other* sessions are pending) and write as one locked critical section, so
+  two hooks firing at once can't both resolve the same colour slot.
+- `scripts/RingDisplay.psm1` — `Set-RemainingLed`: hands the ring to the
+  oldest remaining pending session (or turns it off if none remain). Shared
+  by `ha-bridge.ps1` (long-press/triple-press) and `notify-ha.ps1`
+  (replied/stopped) so the two call sites can't diverge on what "resolved,
+  others still pending" looks like.
 - `scripts/notify-ha.ps1` — the entry point Claude Code hooks call.
 - `scripts/confirm-session.ps1` — focuses a session's VS Code window and, by
   default, types a reply; called with `-FocusOnly` (what the device's
@@ -64,7 +79,7 @@ Import-Module Pester -MinimumVersion 5.0 -Force   # NOT the Windows-bundled 3.4.
 Invoke-Pester claude-voice/scripts/*.Tests.ps1 -Output Detailed
 ```
 
-56 tests, ~10-15 seconds. Two things worth knowing:
+74 tests, ~10-15 seconds. Two things worth knowing:
 
 - **Pester 5+ is required.** Windows ships a bundled Pester 3.4.0 that does
   not support `BeforeAll`/`BeforeEach` and fails confusingly if it loads

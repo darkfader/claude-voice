@@ -3,6 +3,8 @@ Import-Module (Join-Path $PSScriptRoot 'PendingState.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'HaClient.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ButtonAction.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'RingDisplay.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'AmbientState.psm1') -Force
 
 $logPath = Join-Path $PSScriptRoot '..\state\ha-bridge.log'
 
@@ -61,20 +63,9 @@ function Get-SessionSpokenName {
     Get-SessionDisplayName -Project $Entry.project -Ordinal $Entry.ordinal
 }
 
-function Set-RemainingLed {
-    param([Parameter(Mandatory)][hashtable]$Connection)
-    $state = Get-PendingState
-    $ids = @($state.sessions.Keys | Sort-Object { $state.sessions[$_].since })
-    if ($ids.Count -gt 0) {
-        $next = $ids[0]
-        Set-PendingCursor -SessionId $next
-        # Solid full brightness, no flash: this is a hand-off to an existing
-        # waiting session, not a new arrival.
-        Invoke-HaLed -Connection $Connection -Rgb $state.sessions[$next].color -Brightness 255 | Out-Null
-    } else {
-        Invoke-HaLed -Connection $Connection -Off | Out-Null
-    }
-}
+# Set-RemainingLed itself now lives in RingDisplay.psm1 (final review Fix 2)
+# so notify-ha.ps1 shares the exact same "hand the ring to the oldest
+# remaining pending session" logic instead of reimplementing it.
 
 function Invoke-DialRotationEvent {
     param([Parameter(Mandatory)][hashtable]$Connection)
@@ -94,6 +85,7 @@ function Invoke-DialRotationEvent {
 
     $script:LastDialActionAt = $now
     Set-PendingCursor -SessionId $next
+    Set-DisplayedSession -SessionId $next
     Invoke-HaLed -Connection $Connection -Rgb $state.sessions[$next].color -Brightness 255 | Out-Null
     $name = Get-SessionSpokenName -Entry $state.sessions[$next]
     if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection | Out-Null }
@@ -111,6 +103,7 @@ function Invoke-ButtonEvent {
         'select' {
             $entry = $state.sessions[$result.SessionId]
             Set-PendingCursor -SessionId $result.SessionId
+            Set-DisplayedSession -SessionId $result.SessionId
             Invoke-HaLed -Connection $Connection -Rgb $entry.color -Brightness 255 | Out-Null
             $name = Get-SessionSpokenName -Entry $entry
             if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection | Out-Null }
@@ -126,6 +119,7 @@ function Invoke-ButtonEvent {
             & (Join-Path $PSScriptRoot 'confirm-session.ps1') -SessionId $result.SessionId -Project $entry.project -FocusOnly
             if ($LASTEXITCODE -ne 0) {
                 Invoke-HaAnnounce -Connection $Connection -Text "Couldn't find the $(Get-SessionSpokenName -Entry $entry) session" | Out-Null
+                Set-DisplayedSession -SessionId $result.SessionId
                 Invoke-HaLed -Connection $Connection -Rgb $entry.color -Brightness 255 | Out-Null
             } else {
                 Invoke-HaChime -Connection $Connection | Out-Null
@@ -148,11 +142,33 @@ function Invoke-IdleCheck {
     param([Parameter(Mandatory)][hashtable]$Connection)
     $state = Get-PendingState
     if ($state.sessions.Count -gt 0) { return }   # pending outranks active
-    if (-not $state.activeSession -or -not $state.activeSince) { return }
-    $since = $null
-    if (-not [datetime]::TryParse($state.activeSince, [ref]$since)) { return }
-    if (((Get-Date) - $since).TotalMinutes -ge $script:IdleFadeMinutes) {
+
+    # Fix 3 (final review): the ring can be showing a session that is
+    # neither pending (already resolved elsewhere, or expired out of
+    # `sessions` at the 4h read-time cutoff) nor the current ambient
+    # `activeSession` -- e.g. a Notification lit the ring bright without
+    # ever touching activeSession, and its pending entry later expired
+    # while nobody was looking. Nothing else ever turns a ring like that
+    # off, so it would otherwise stay at full brightness indefinitely.
+    # displayedSession is deliberately never auto-cleared by Get-PendingState
+    # (see PendingState.psm1) precisely so this check can still see it here.
+    if ($state.displayedSession -and $state.displayedSession -ne $state.activeSession) {
+        Clear-DisplayedSession
+        Invoke-HaLed -Connection $Connection -Off | Out-Null
+        return
+    }
+
+    # Fix 1 (final review): the ambient-fade decision itself now lives in
+    # Test-AmbientIdleExpired (AmbientState.psm1), a pure function unit-
+    # tested directly with a stale timestamp -- including an unparseable
+    # activeSince, which is the exact case that let the old inline
+    # `$since = $null; [datetime]::TryParse(..., [ref]$since)` bug (a $null-
+    # valued [ref] out-parameter cannot bind) survive undetected: it threw
+    # on every real call, was swallowed by the outer try/catch to the log,
+    # and the ring never faded.
+    if (Test-AmbientIdleExpired -State $state -Now (Get-Date) -IdleMinutes $script:IdleFadeMinutes) {
         Clear-ActiveSession
+        Clear-DisplayedSession
         Invoke-HaLed -Connection $Connection -Off | Out-Null
     }
 }

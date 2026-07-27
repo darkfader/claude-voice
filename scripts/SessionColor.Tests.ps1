@@ -11,10 +11,22 @@ Describe 'Get-NormalisedProjectPath' {
 }
 
 Describe 'Get-ProjectColorSlot' {
-    It 'is deterministic for the same path' {
-        $a = Get-ProjectColorSlot -ProjectPath 'C:\git\Foo'
-        $b = Get-ProjectColorSlot -ProjectPath 'C:\git\Foo'
-        $a | Should -Be $b
+    It 'pins the actual SHA256-derived slot for a known path (golden value)' {
+        # Final review cheap-minor fix: the old test called
+        # Get-ProjectColorSlot twice in the SAME process and compared the
+        # results, which cannot distinguish SHA256 (the intended,
+        # cross-process-stable algorithm) from String.GetHashCode() (which
+        # the file's own top comment says is explicitly wrong here, because
+        # .NET Core randomises string hashing PER PROCESS) -- both are
+        # "deterministic" within one process, so that test could never have
+        # caught a regression to GetHashCode. A golden value pinned against
+        # the real SHA256 computation catches it at zero ongoing cost.
+        #
+        # Derivation, reproducible independently of this module:
+        #   norm  = 'c:/users/darkf/git/homeassistant'   (lowercased, /-separated, no trailing /)
+        #   bytes = SHA256(UTF8(norm))
+        #   slot  = BitConverter.ToUInt32(bytes, 0) % 16
+        Get-ProjectColorSlot -ProjectPath 'C:\Users\darkf\git\HomeAssistant' | Should -Be 3
     }
     It 'gives the same slot regardless of path spelling' {
         (Get-ProjectColorSlot -ProjectPath 'C:\Users\darkf\git\HomeAssistant') |

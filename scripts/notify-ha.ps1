@@ -25,6 +25,7 @@ try {
     Import-Module (Join-Path $PSScriptRoot 'HaClient.psm1')     -Force
     Import-Module (Join-Path $PSScriptRoot 'NotifyPlan.psm1')   -Force
     Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'RingDisplay.psm1')  -Force
 
     # --- read the hook payload -------------------------------------------------
     $payload = $null
@@ -51,42 +52,47 @@ try {
     if (-not $sessionId) { $sessionId = 'cwd:' + (Get-NormalisedProjectPath -Path $cwd) }
     $project = Split-Path $cwd -Leaf
 
-    $before      = Get-PendingState
-    $othersCount = @($before.sessions.Keys | Where-Object { $_ -ne $sessionId }).Count
+    $before    = Get-PendingState
     # Captured BEFORE the switch mutates state: for stop/clear the entry is gone
     # by the time we need its colour/ordinal, and recomputing is not equivalent --
     # Resolve-SessionColorSlot without -TakenSlots can pick a different slot than
     # the one originally assigned, so the dim ambient colour would not match what
-    # was shown while the session was pending.
+    # was shown while the session was pending. Reading this session's OWN entry
+    # ahead of the lock is not the race Fix 4 closes -- only one hook process
+    # ever writes a given session_id's entry, so there is no concurrent writer
+    # to race against here.
     $prevEntry = $before.sessions[$sessionId]
 
     # --- local bookkeeping first, before any network call --------------------
     # Doing this ahead of the kill-switch check means toggling the switch off
     # can never strand an entry that can then never be cleared.
+    #
+    # Fix 4 (final review): $othersCount, and for 'notification' the colour
+    # slot/ordinal, all now come from a single locked critical section in
+    # PendingState.psm1 (Register-PendingNotification / Resolve-PendingSession)
+    # instead of being derived here from an unlocked $before read and applied
+    # later inside a separately-locked setter. Two hooks firing at once could
+    # previously both read othersCount=0 (both take the ring) and both resolve
+    # the same colour slot -- defeating the collision-avoidance the whole
+    # design exists for.
+    $othersCount = 0
     switch ($Event) {
         'notification' {
-            if (-not $before.sessions.ContainsKey($sessionId)) {
-                $taken   = @($before.sessions.Values | ForEach-Object { $_.slot })
-                $slot    = Resolve-SessionColorSlot -ProjectPath $cwd -TakenSlots $taken
-                $ords    = @($before.sessions.Values | Where-Object { $_.project -eq $project } | ForEach-Object { $_.ordinal })
-                $ordinal = Get-SessionOrdinal -TakenOrdinals $ords
-                $rgb     = ConvertFrom-HueSlot -Slot $slot
-                Set-PendingSession -SessionId $sessionId -Project $project -Cwd $cwd -Message $message -Color $rgb -Slot $slot -Ordinal $ordinal
-                if ($othersCount -eq 0) { Set-PendingCursor -SessionId $sessionId }
-            }
+            $result = Register-PendingNotification -SessionId $sessionId -Project $project -Cwd $cwd -Message $message
+            $othersCount = $result.OthersCount
         }
         'stop'  {
-            Clear-PendingSession -SessionId $sessionId
-            # Also mark this the active session: 'stop' lights the ring dim,
+            # Also marks this the active session: 'stop' lights the ring dim,
             # and Invoke-IdleCheck fades based on activeSession/activeSince.
             # Without this the dim ring a finished turn leaves behind has no
             # timer attached and would glow indefinitely -- the exact
             # overnight-glow case the idle timeout exists to prevent.
-            Set-ActiveSession -SessionId $sessionId
+            $result = Resolve-PendingSession -SessionId $sessionId
+            $othersCount = $result.OthersCount
         }
         'clear' {
-            Clear-PendingSession -SessionId $sessionId
-            Set-ActiveSession    -SessionId $sessionId
+            $result = Resolve-PendingSession -SessionId $sessionId
+            $othersCount = $result.OthersCount
         }
     }
 
@@ -110,9 +116,26 @@ try {
         'set' {
             $brightness = if ($plan.Led.Bright) { 255 } else { 60 }
             Invoke-HaLed -Connection $conn -Rgb $rgb -Brightness $brightness -Flash:$plan.Led.Flash | Out-Null
+            Set-DisplayedSession -SessionId $sessionId
         }
-        'off'  { Invoke-HaLed -Connection $conn -Off | Out-Null }
-        'none' { }
+        'off'  { Invoke-HaLed -Connection $conn -Off | Out-Null; Clear-DisplayedSession }
+        'none' {
+            # Fix 2 (final review), spec Notification precedence rule 3
+            # (Resolved): if replying/stopping resolved this session and
+            # others are still pending, the ring must move to the oldest
+            # remaining one, solid at full brightness, no flash -- it is a
+            # hand-off, not a new arrival. Get-NotifyPlan stays pure and has
+            # no notion of *other* sessions' colours, so its 'none' here
+            # covers two different real outcomes: rule 2 (a second
+            # notification must leave the ring strictly alone) and rule 3
+            # (a resolution with survivors, which this hook -- the only
+            # place that knows both "did something resolve" and "what else
+            # is pending" -- must actively act on). Only stop/clear reach
+            # rule 3; a second notification must never trigger this branch.
+            if (($Event -eq 'stop' -or $Event -eq 'clear') -and $othersCount -gt 0) {
+                Set-RemainingLed -Connection $conn
+            }
+        }
     }
 
     switch ($plan.Sound) {
