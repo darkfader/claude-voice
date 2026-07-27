@@ -26,6 +26,8 @@ try {
     Import-Module (Join-Path $PSScriptRoot 'NotifyPlan.psm1')   -Force
     Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'RingDisplay.psm1')  -Force
+    Import-Module (Join-Path $PSScriptRoot 'WindowFocus.psm1')  -Force
+    Import-Module (Join-Path $PSScriptRoot 'SessionTitle.psm1') -Force
 
     # --- read the hook payload -------------------------------------------------
     $payload = $null
@@ -81,7 +83,31 @@ try {
     # currently waiting on you. Runs before the kill-switch check for the same
     # reason the pending bookkeeping does: local state should stay accurate
     # even while notifications are switched off.
-    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd
+    # Resolve the window THIS session lives in by walking up from this hook
+    # process. Only the session itself can know this -- the bridge runs in a
+    # different tree entirely -- which is why it is captured here and stored,
+    # rather than searched for at focus time. Window titles were tried first
+    # and are not usable: VS Code names the window after the workspace, which
+    # often is not the project folder (see WindowFocus.psm1).
+    $windowPid = 0
+    try {
+        $resolved = Get-OwningWindowPid
+        if ($resolved) { $windowPid = [int]$resolved }
+    } catch { }
+
+    # Claude Code's own title for this thread ("Explore Home Assistant Voice
+    # capabilities"), read from the transcript the hook payload points at.
+    # Far more use than "HomeAssistant 2" when the device says it aloud.
+    $title = ''
+    try {
+        $transcript = Get-PayloadValue -Payload $payload -Name 'transcript_path'
+        if ($transcript) {
+            $derived = Get-SessionTitle -TranscriptPath $transcript
+            if ($derived) { $title = [string]$derived }
+        }
+    } catch { }
+
+    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd -WindowPid $windowPid -Title $title
 
     $othersCount = 0
     switch ($Event) {
@@ -112,7 +138,10 @@ try {
     $entry   = if ($after.sessions.ContainsKey($sessionId)) { $after.sessions[$sessionId] } else { $prevEntry }
     $ordinal = if ($entry) { $entry.ordinal } else { 1 }
     $rgb     = if ($entry) { $entry.color } else { (ConvertFrom-HueSlot -Slot (Resolve-SessionColorSlot -ProjectPath $cwd)) }
-    $display = Get-SessionDisplayName -Project $project -Ordinal $ordinal
+    # Prefer Claude Code's thread title in spoken announcements too, so the
+    # device says "Explore Home Assistant Voice capabilities needs input"
+    # rather than "HomeAssistant 2 needs input".
+    $display = if ($title) { $title } else { Get-SessionDisplayName -Project $project -Ordinal $ordinal }
 
     $conn = Get-HaConnection
     if (-not (Test-HaNotificationsEnabled -Connection $conn)) { exit 0 }
