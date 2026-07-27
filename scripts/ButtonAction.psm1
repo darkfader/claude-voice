@@ -12,6 +12,34 @@ function Get-DialCycleTarget {
     $names[($idx + 1) % $names.Count]
 }
 
+function Get-KnownCycleTarget {
+    param(
+        [Parameter(Mandatory)][hashtable]$KnownSessions,
+        [string]$Cursor,
+        [Parameter(Mandatory)][ValidateSet('cw','ccw')][string]$Direction
+    )
+    # Stable firstSeen order, NOT most-recently-used. MRU suits Alt-Tab, where
+    # the list is invisible and a held modifier bounds the gesture. On a
+    # physical dial it means the list reorders under your fingers, so the same
+    # rotation stops landing in the same place.
+    $names = @($KnownSessions.Keys | Sort-Object { $KnownSessions[$_].firstSeen })
+    if ($names.Count -eq 0) { return $null }
+
+    $idx = [array]::IndexOf($names, $Cursor)
+    if ($idx -lt 0) {
+        # No cursor, or one naming a session that has since expired: enter the
+        # list from the end the rotation is heading away from, so the first
+        # detent lands on the oldest going forward and the newest going back.
+        if ($Direction -eq 'cw') { return $names[0] } else { return $names[-1] }
+    }
+
+    $step = if ($Direction -eq 'cw') { 1 } else { -1 }
+    # PowerShell's % keeps the sign of the dividend, so -1 % 3 is -1, not 2.
+    # The second modulo is what makes anticlockwise wrap instead of indexing
+    # backwards off the end of the array.
+    $names[((($idx + $step) % $names.Count) + $names.Count) % $names.Count]
+}
+
 function Get-ButtonAction {
     param(
         [Parameter(Mandatory)][ValidateSet('double_press','long_press','triple_press','easter_egg_press')]
@@ -62,4 +90,4 @@ function Get-ButtonAction {
     }
 }
 
-Export-ModuleMember -Function Get-ButtonAction, Get-DialCycleTarget
+Export-ModuleMember -Function Get-ButtonAction, Get-DialCycleTarget, Get-KnownCycleTarget

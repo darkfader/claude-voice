@@ -152,3 +152,55 @@ Describe 'Get-DialCycleTarget' {
         Get-DialCycleTarget -PendingSessions $pending -Cursor 'personal' | Should -Be 'personal'
     }
 }
+
+Describe 'Get-KnownCycleTarget' {
+    BeforeAll {
+        $script:known = @{
+            b = @{ firstSeen = '2026-07-27T10:01:00.0000000+02:00' }
+            a = @{ firstSeen = '2026-07-27T10:00:00.0000000+02:00' }
+            c = @{ firstSeen = '2026-07-27T10:02:00.0000000+02:00' }
+        }
+    }
+
+    It 'returns null when nothing is known' {
+        Get-KnownCycleTarget -KnownSessions @{} -Cursor $null -Direction 'cw'  | Should -BeNullOrEmpty
+        Get-KnownCycleTarget -KnownSessions @{} -Cursor $null -Direction 'ccw' | Should -BeNullOrEmpty
+    }
+
+    It 'starts at the oldest going clockwise with no cursor' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'cw' | Should -Be 'a'
+    }
+
+    It 'starts at the newest going anticlockwise with no cursor' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'ccw' | Should -Be 'c'
+    }
+
+    It 'advances in firstSeen order clockwise' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'a' -Direction 'cw' | Should -Be 'b'
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'b' -Direction 'cw' | Should -Be 'c'
+    }
+
+    It 'retreats in firstSeen order anticlockwise' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'c' -Direction 'ccw' | Should -Be 'b'
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'b' -Direction 'ccw' | Should -Be 'a'
+    }
+
+    It 'wraps forward past the newest to the oldest' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'c' -Direction 'cw' | Should -Be 'a'
+    }
+
+    It 'wraps backward past the oldest to the newest' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'a' -Direction 'ccw' | Should -Be 'c'
+    }
+
+    It 'treats an unrecognised cursor as no cursor' {
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'gone' -Direction 'cw'  | Should -Be 'a'
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'gone' -Direction 'ccw' | Should -Be 'c'
+    }
+
+    It 'returns the only session regardless of direction' {
+        $one = @{ solo = @{ firstSeen = '2026-07-27T10:00:00.0000000+02:00' } }
+        Get-KnownCycleTarget -KnownSessions $one -Cursor 'solo' -Direction 'cw'  | Should -Be 'solo'
+        Get-KnownCycleTarget -KnownSessions $one -Cursor 'solo' -Direction 'ccw' | Should -Be 'solo'
+    }
+}
