@@ -1,17 +1,4 @@
 # claude-voice/scripts/ButtonAction.psm1
-function Get-DialCycleTarget {
-    param(
-        [Parameter(Mandatory)][hashtable]$PendingSessions,
-        [string]$Cursor
-    )
-    # Arrival order (oldest waiting first). Session ids are random, so
-    # sorting them would produce a meaningless rotation.
-    $names = @($PendingSessions.Keys | Sort-Object { $PendingSessions[$_].since })
-    if ($names.Count -eq 0) { return $null }
-    $idx = [array]::IndexOf($names, $Cursor)
-    $names[($idx + 1) % $names.Count]
-}
-
 function Get-KnownCycleTarget {
     param(
         [Parameter(Mandatory)][hashtable]$KnownSessions,
@@ -45,24 +32,50 @@ function Get-ButtonAction {
         [Parameter(Mandatory)][ValidateSet('double_press','long_press','triple_press','easter_egg_press')]
         [string]$EventType,
         [Parameter(Mandatory)][hashtable]$PendingSessions,
-        [string]$Cursor
+        [string]$Cursor,
+        # Every session seen recently, pending or not -- the same map the dial
+        # cycles. Only double_press consults it (see below). Optional so that
+        # callers which genuinely only care about pending sessions, and the
+        # pending-only tests, need not supply it.
+        [hashtable]$KnownSessions = @{}
     )
     $names = @($PendingSessions.Keys | Sort-Object { $PendingSessions[$_].since })
 
     if ($EventType -eq 'easter_egg_press') {
         return @{ Action = 'none'; SessionId = $null; Speak = $null }
     }
+
+    # double_press resolves against KNOWN sessions, not pending ones, and so
+    # must be handled before the "nothing pending" bail-out below. The dial
+    # sets the cursor from the known map, so a cursor pointing at a session
+    # that is merely known is normal and expected -- resolving double_press
+    # against pending sessions instead would ignore the dial's selection
+    # entirely and, with exactly one session pending, silently activate THAT
+    # one instead of the one the ring is showing.
+    if ($EventType -eq 'double_press') {
+        # The dial owns cycling now, which frees double-press to mean "take me
+        # to what's selected" -- the gesture you want after alt-tabbing away,
+        # when the selection is already right. Unlike long_press it
+        # deliberately does NOT clear the pending light.
+        $knownNames = @($KnownSessions.Keys | Sort-Object { $KnownSessions[$_].firstSeen })
+        if ($knownNames.Count -eq 0) {
+            return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing pending' }
+        }
+        $effectiveCursor = $Cursor
+        if ((-not $effectiveCursor -or $knownNames -notcontains $effectiveCursor) -and $knownNames.Count -eq 1) {
+            $effectiveCursor = $knownNames[0]
+        }
+        if (-not $effectiveCursor -or $knownNames -notcontains $effectiveCursor) {
+            return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing selected' }
+        }
+        return @{ Action = 'activate'; SessionId = $effectiveCursor; Speak = $null }
+    }
+
     if ($names.Count -eq 0) {
         return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing pending' }
     }
 
     switch ($EventType) {
-        'double_press' {
-            $next = Get-DialCycleTarget -PendingSessions $PendingSessions -Cursor $Cursor
-            # Speak stays $null: only the bridge knows the display name
-            # (project + ordinal), so it composes the utterance.
-            return @{ Action = 'select'; SessionId = $next; Speak = $null }
-        }
         'long_press' {
             $effectiveCursor = $Cursor
             if ((-not $effectiveCursor -or $names -notcontains $effectiveCursor) -and $names.Count -eq 1) {
@@ -90,4 +103,4 @@ function Get-ButtonAction {
     }
 }
 
-Export-ModuleMember -Function Get-ButtonAction, Get-DialCycleTarget, Get-KnownCycleTarget
+Export-ModuleMember -Function Get-ButtonAction, Get-KnownCycleTarget

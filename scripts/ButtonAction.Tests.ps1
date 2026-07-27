@@ -4,29 +4,51 @@ BeforeAll {
 }
 
 Describe 'Get-ButtonAction' {
-    It 'double_press with nothing pending says nothing pending' {
-        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions @{} -Cursor $null
+    It 'double_press with nothing known says nothing pending' {
+        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions @{} -Cursor $null -KnownSessions @{}
         $a.Action | Should -Be 'none'
         $a.Speak | Should -Be 'Nothing pending'
     }
 
-    It 'double_press cycles from no cursor to the oldest session' {
-        $pending = @{
-            work     = @{ since = '2026-07-26T11:00:00Z' }
-            personal = @{ since = '2026-07-26T10:00:00Z' }
+    It 'double_press activates the selected session without cycling' {
+        $known = @{
+            work     = @{ firstSeen = '2026-07-26T11:00:00Z' }
+            personal = @{ firstSeen = '2026-07-26T10:00:00Z' }
         }
-        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions $pending -Cursor $null
-        $a.Action | Should -Be 'select'
-        $a.SessionId | Should -Be 'personal'
+        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions @{} -Cursor 'work' -KnownSessions $known
+        $a.Action | Should -Be 'activate'
+        $a.SessionId | Should -Be 'work'
     }
 
-    It 'double_press wraps around from the newest session back to the oldest' {
-        $pending = @{
-            work     = @{ since = '2026-07-26T11:00:00Z' }
-            personal = @{ since = '2026-07-26T10:00:00Z' }
+    It 'double_press activates a session the dial selected even though it is not pending' {
+        # The regression this guards: resolving double_press against pending
+        # sessions ignored the dial's selection entirely, and with exactly one
+        # session pending it activated THAT one instead of the one on the ring.
+        $known = @{
+            browsing = @{ firstSeen = '2026-07-26T10:00:00Z' }
+            waiting  = @{ firstSeen = '2026-07-26T11:00:00Z' }
         }
-        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions $pending -Cursor 'work'
-        $a.SessionId | Should -Be 'personal'
+        $pending = @{ waiting = @{ since = '2026-07-26T11:00:00Z' } }
+        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions $pending -Cursor 'browsing' -KnownSessions $known
+        $a.Action | Should -Be 'activate'
+        $a.SessionId | Should -Be 'browsing'
+    }
+
+    It 'double_press with one known session and no cursor activates that one' {
+        $known = @{ solo = @{ firstSeen = '2026-07-26T10:00:00Z' } }
+        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions @{} -Cursor $null -KnownSessions $known
+        $a.Action | Should -Be 'activate'
+        $a.SessionId | Should -Be 'solo'
+    }
+
+    It 'double_press with several known and no cursor selects nothing' {
+        $known = @{
+            work     = @{ firstSeen = '2026-07-26T11:00:00Z' }
+            personal = @{ firstSeen = '2026-07-26T10:00:00Z' }
+        }
+        $a = Get-ButtonAction -EventType 'double_press' -PendingSessions @{} -Cursor $null -KnownSessions $known
+        $a.Action | Should -Be 'none'
+        $a.Speak | Should -Be 'Nothing selected'
     }
 
     It 'long_press with a selected cursor confirms that session' {
@@ -78,80 +100,8 @@ Describe 'Get-ButtonAction' {
         $a.Action | Should -Be 'none'
     }
 
-    It 'cycles in arrival order, oldest first - not alphabetically' {
-        $pending = @{
-            'zzz' = @{ since = '2026-07-26T10:00:00Z' }
-            'aaa' = @{ since = '2026-07-26T11:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor $null | Should -Be 'zzz'
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'zzz' | Should -Be 'aaa'
-    }
-
-    It 'wraps from the newest back to the oldest' {
-        $pending = @{
-            'zzz' = @{ since = '2026-07-26T10:00:00Z' }
-            'aaa' = @{ since = '2026-07-26T11:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'aaa' | Should -Be 'zzz'
-    }
 }
 
-Describe 'Get-DialCycleTarget' {
-    It 'advances from no cursor to the oldest session' {
-        $pending = @{
-            work     = @{ since = '2026-07-26T11:00:00Z' }
-            personal = @{ since = '2026-07-26T10:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor $null | Should -Be 'personal'
-    }
-
-    It 'wraps around from the newest back to the oldest' {
-        $pending = @{
-            work     = @{ since = '2026-07-26T11:00:00Z' }
-            personal = @{ since = '2026-07-26T10:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'work' | Should -Be 'personal'
-    }
-
-    It 'returns $null when nothing is pending' {
-        Get-DialCycleTarget -PendingSessions @{} -Cursor $null | Should -BeNullOrEmpty
-    }
-
-    It 'advances through the middle of a three-session list, oldest to newest' {
-        $pending = @{
-            alpha   = @{ since = '2026-07-26T10:00:00Z' }
-            bravo   = @{ since = '2026-07-26T11:00:00Z' }
-            charlie = @{ since = '2026-07-26T12:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'alpha' | Should -Be 'bravo'
-    }
-
-    It 'treats a stale cursor (no longer pending) as if starting from the top' {
-        $pending = @{
-            work     = @{ since = '2026-07-26T11:00:00Z' }
-            personal = @{ since = '2026-07-26T10:00:00Z' }
-        }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'someone-else' | Should -Be 'personal'
-    }
-
-    It 'with exactly one pending session, keeps returning that same session no matter the cursor' {
-        # Final review (Fix 1): this is the single-session case the existing
-        # 0/2/3-session tests never covered. Get-DialCycleTarget itself has
-        # no special-case for count -eq 1 -- both a $null cursor (index -1,
-        # wraps to names[0]) and a cursor already equal to names[0]
-        # ((0 + 1) % 1 = 0) land back on the same lone session. That's
-        # correct behavior for this pure function, but calling it
-        # unconditionally on every dial detent (as ha-bridge.ps1's
-        # Invoke-DialRotationEvent used to) would re-announce/re-pulse the
-        # same session forever on a single ordinary volume/hue turn -- which
-        # is why ha-bridge.ps1 now gates dial-cycling to only run when 2+
-        # sessions are pending, never calling this function at all for the
-        # 1-session case.
-        $pending = @{ personal = @{ since = '2026-07-26T10:00:00Z' } }
-        Get-DialCycleTarget -PendingSessions $pending -Cursor $null | Should -Be 'personal'
-        Get-DialCycleTarget -PendingSessions $pending -Cursor 'personal' | Should -Be 'personal'
-    }
-}
 
 Describe 'Get-KnownCycleTarget' {
     BeforeAll {
