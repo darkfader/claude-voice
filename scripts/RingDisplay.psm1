@@ -24,6 +24,38 @@
 # does its own nested import, every caller's already-loaded instance is the
 # one that gets used, with no risk of a second copy forking off.
 
+function Test-ShouldHandOffRing {
+    param(
+        [Parameter(Mandatory)][ValidateSet('notification', 'stop', 'clear')][string]$Event,
+        [Parameter(Mandatory)][int]$OthersCount,
+        [AllowNull()][string]$DisplayedSession,
+        [Parameter(Mandatory)][string]$SessionId
+    )
+    # Final review: the hand-off (spec rule 3, "Resolved") must only fire
+    # when the session that just resolved is the one the ring was actually
+    # showing. The prior guard was just `($Event -eq 'stop' -or $Event -eq
+    # 'clear') -and $OthersCount -gt 0` -- it never checked WHICH session
+    # resolved, only that survivors remained. That silently discarded a
+    # user's dial selection: N1 and N2 both pending, the user rotates the
+    # dial to N2 (Set-PendingCursor/-DisplayedSession both move to N2), then
+    # types a prompt in an unrelated session X. X's own 'clear' fires (any
+    # UserPromptSubmit resolves that session, whether or not X itself was
+    # ever pending -- Clear-PendingSession is a no-op if it wasn't), and
+    # $OthersCount is still 2 (N1 and N2, untouched) -- so the old guard
+    # handed the ring to N1 anyway, silently overriding the dial choice the
+    # user had just made. This violates the stated rule ("if there's
+    # already a session wanting attention and there's another, just do the
+    # chime but don't switch session yet") and spec rule 2's principle that
+    # the display only moves when the user moves it or when what it was
+    # showing is resolved -- X resolving is neither.
+    #
+    # $DisplayedSession -eq $SessionId closes that: only a resolution of the
+    # SESSION CURRENTLY ON DISPLAY can hand the ring off. A $null
+    # DisplayedSession (nothing has ever lit the ring) never equals a real
+    # session id, so it correctly never hands off either.
+    ($Event -eq 'stop' -or $Event -eq 'clear') -and $OthersCount -gt 0 -and $DisplayedSession -eq $SessionId
+}
+
 function Set-RemainingLed {
     param([Parameter(Mandatory)][hashtable]$Connection)
     $state = Get-PendingState
@@ -41,4 +73,4 @@ function Set-RemainingLed {
     }
 }
 
-Export-ModuleMember -Function Set-RemainingLed
+Export-ModuleMember -Function Set-RemainingLed, Test-ShouldHandOffRing

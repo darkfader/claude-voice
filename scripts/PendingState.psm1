@@ -13,6 +13,21 @@ $script:ExpiryHours = 4
 
 function Set-PendingStatePath {
     param([Parameter(Mandatory)][string]$Path)
+    # Deliberately NOT resolved to an absolute path here. $script:StatePath
+    # is consumed exclusively via .NET path APIs now (File.Move, File.Exists
+    # in the strengthened atomicity test) rather than PowerShell cmdlets, and
+    # .NET resolves a relative path against [Environment]::CurrentDirectory,
+    # which silently diverges from PowerShell's own $PWD the moment anything
+    # does a provider-level `cd`/`Set-Location` without also calling
+    # [Environment]::CurrentDirectory = ... to match. Every current caller
+    # (the production default above, `..\state\pending.json` relative to
+    # $PSScriptRoot which Join-Path already resolves absolute, and every
+    # test via Pester's $TestDrive, which is itself an absolute path) already
+    # passes an absolute path, so this has never actually bitten anything --
+    # left as a documented caller contract rather than defensively resolved,
+    # so a future relative-path caller fails loudly (wrong file, easy to
+    # spot) instead of silently succeeding today and only breaking once some
+    # unrelated code elsewhere changes the process's current directory.
     $script:StatePath = $Path
 }
 
@@ -32,15 +47,16 @@ function Save-PendingState {
     param([hashtable]$State)
     $dir = Split-Path $script:StatePath -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    # Atomic write (Fix 4, final review): write to a temp file in the SAME
-    # directory, then swap it into place. The previous direct `Set-Content`
-    # truncates the file and streams new content into it in place, so an
-    # unlocked Get-PendingState reader (readers deliberately don't take the
-    # lock -- only writers serialise against each other) landing mid-write
-    # sees truncated/invalid JSON, which ConvertFrom-Json fails to parse,
-    # which Get-PendingState then silently treats as an empty state -- a
-    # reader can transiently believe nothing is pending while a session is
-    # still waiting on the user.
+    # Atomic write (Fix 4, final review; corrected in a later final-review
+    # pass -- see below). Write to a temp file in the SAME directory, then
+    # swap it into place. The previous direct `Set-Content` truncates the
+    # file and streams new content into it in place, so an unlocked
+    # Get-PendingState reader (readers deliberately don't take the lock --
+    # only writers serialise against each other) landing mid-write sees
+    # truncated/invalid JSON, which ConvertFrom-Json fails to parse, which
+    # Get-PendingState then silently treats as an empty state -- a reader
+    # can transiently believe nothing is pending while a session is still
+    # waiting on the user.
     #
     # `Move-Item -Force` was tried first and REJECTED after empirical
     # testing: it is NOT atomic on this system. A stress test (background
@@ -55,30 +71,34 @@ function Save-PendingState {
     # New-EmptyPendingState }` guard treats a momentarily-missing file
     # exactly like a legitimately-absent one.
     #
-    # [System.IO.File]::Replace uses the Win32 ReplaceFile API, which IS a
-    # genuine atomic swap -- verified empirically with the same stress
-    # harness (tens of thousands of concurrent reads during a background
-    # write-storm, including 200KB payloads to widen the write window):
-    # zero windows where the destination was missing or its content
-    # invalid. It requires the destination to already exist, so the very
-    # first write (file doesn't exist yet) falls back to a plain Move --
-    # nothing exists yet to race a reader against in that case, and
-    # Get-PendingState already treats "file doesn't exist" as legitimate
-    # empty state.
+    # `[System.IO.File]::Replace` (Win32 ReplaceFile) was tried next and
+    # SHIPPED as the fix -- but a LATER, higher-volume stress probe (direct
+    # `[System.IO.File]::Exists` polling in a tight loop against a
+    # background writer, ~100k samples per run, rather than probing through
+    # Get-PendingState) found it is NOT actually atomic either: the
+    # destination was transiently MISSING in 5.45% of one run and 5.71% of
+    # another. ReplaceFile with a NULL backup renames the destination OUT
+    # before renaming the replacement IN, leaving a real window where the
+    # file doesn't exist -- which lands on the exact same
+    # `if (-not (Test-Path ...)) { return New-EmptyPendingState }` guard
+    # this fix exists to defeat. (The comment that used to live here claimed
+    # "zero windows where the destination was missing" -- that was measured
+    # by probing THROUGH Get-PendingState, whose own retry loop and repeated
+    # file-handle opens happened to phase-shift the sampling window away
+    # from the writer and masked the gap. Probing Test-Path/File.Exists
+    # directly, with nothing else in between, is what actually surfaces it.)
+    #
+    # `[System.IO.File]::Move($tempPath, $script:StatePath, $true)` --
+    # MoveFileEx with MOVEFILE_REPLACE_EXISTING -- is the current
+    # implementation. Verified empirically with the same direct-Exists
+    # stress harness: 0 misses out of 99,773 samples. It also succeeds when
+    # the destination does not exist yet, so unlike File.Replace it needs no
+    # separate first-write fallback (and the [NullString]::Value workaround
+    # File.Replace's backup-path argument required no longer applies).
     $tempPath = Join-Path $dir "pending.$([guid]::NewGuid().ToString('N')).tmp"
     try {
         $State | ConvertTo-Json -Depth 5 | Set-Content -Path $tempPath
-        if (Test-Path $script:StatePath) {
-            # [NullString]::Value, NOT a bare $null -- confirmed empirically
-            # that PowerShell's method-argument binder coerces a bare $null
-            # into an EMPTY STRING for this particular 3-arg overload, and
-            # File.Replace then throws "The path is empty" for the backup
-            # parameter even though passing no backup file is the whole
-            # point of that argument being nullable.
-            [System.IO.File]::Replace($tempPath, $script:StatePath, [NullString]::Value)
-        } else {
-            [System.IO.File]::Move($tempPath, $script:StatePath)
-        }
+        [System.IO.File]::Move($tempPath, $script:StatePath, $true)
     } finally {
         if (Test-Path $tempPath) { Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue }
     }
@@ -112,9 +132,10 @@ function Get-PendingState {
     if (-not (Test-Path $script:StatePath)) { return New-EmptyPendingState }
 
     # Fix 4 (final review) hardening: Save-PendingState's atomic swap
-    # ([System.IO.File]::Replace) guarantees a reader never sees TORN
-    # content, but it does not guarantee a concurrent OPEN call never
-    # transiently collides with the swap in progress -- verified
+    # ([System.IO.File]::Move with MOVEFILE_REPLACE_EXISTING) guarantees a
+    # reader never sees TORN content, but it does not guarantee a
+    # concurrent OPEN call never transiently collides with the swap in
+    # progress -- verified
     # empirically under a tight write/read stress loop, where a single-shot
     # unretried Get-Content routinely failed with a sharing violation
     # ("being used by another process") purely from timing, not corruption.

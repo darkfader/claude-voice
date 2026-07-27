@@ -132,7 +132,16 @@ try {
             # place that knows both "did something resolve" and "what else
             # is pending" -- must actively act on). Only stop/clear reach
             # rule 3; a second notification must never trigger this branch.
-            if (($Event -eq 'stop' -or $Event -eq 'clear') -and $othersCount -gt 0) {
+            #
+            # Later final-review pass: Test-ShouldHandOffRing (RingDisplay.psm1)
+            # additionally requires that THIS session was the one actually
+            # displayed ($before.displayedSession, read before the switch
+            # above mutated state) -- otherwise an unrelated session's
+            # stop/clear could steal the ring away from whatever the user
+            # had just selected with the dial, even though nothing about
+            # what was on display actually resolved. See that function's
+            # comment for the full scenario this closes.
+            if (Test-ShouldHandOffRing -Event $Event -OthersCount $othersCount -DisplayedSession $before.displayedSession -SessionId $sessionId) {
                 Set-RemainingLed -Connection $conn
             }
         }

@@ -214,36 +214,38 @@ Describe 'PendingState' {
         $result.OthersCount | Should -Be 0
     }
 
-    It 'Save-PendingState is atomic: unlocked concurrent reads never observe a torn/empty write' {
-        # Final review Fix 4: Save-PendingState used to truncate-and-rewrite
-        # the file in place. Get-PendingState deliberately does NOT take the
-        # lock (only writers serialise against each other -- see
-        # Invoke-WithPendingStateLock's comment), so an unlocked reader
-        # landing mid-write could see invalid JSON and silently fall back to
-        # an empty state, i.e. a reader could transiently believe nothing is
-        # pending while a session is still waiting. The fix writes to a temp
-        # file and [System.IO.File]::Replace's it into place, which is a
-        # genuine atomic swap (verified empirically: Move-Item -Force was
-        # tried FIRST and rejected -- it showed the destination transiently
-        # MISSING in ~18% of concurrent checks under stress, which is not
-        # atomic at all). This test seeds a session that is NEVER removed by
-        # the background writer (it only ever adds/updates OTHER session
-        # ids), so if any read ever silently loses it, something regressed.
+    It 'Save-PendingState is atomic: the destination file is never transiently missing under a concurrent write-storm' {
+        # Final review Fix 4, then corrected in a LATER final-review pass.
+        # Save-PendingState used to truncate-and-rewrite the file in place;
+        # the first fix swapped that for [System.IO.File]::Replace (Win32
+        # ReplaceFile). This test originally probed atomicity THROUGH
+        # Get-PendingState (i.e. checked `$state.sessions.ContainsKey('seed')`
+        # after a full read/retry/parse round trip) and passed -- but that
+        # was under-powered: Get-PendingState's own bounded retry loop (see
+        # its comment) repeatedly opens/reads the file, and that repeated
+        # opening happens to phase-shift the reader out of the exact instant
+        # ReplaceFile's rename-out/rename-in gap is open, masking the bug
+        # entirely. A later, direct probe of [System.IO.File]::Exists in a
+        # tight loop -- nothing else between the check and the writer --
+        # found File.Replace is NOT actually atomic: the destination was
+        # transiently MISSING in 5.45% and 5.71% of ~100k-sample runs. That
+        # is exactly the "reader believes nothing is pending" bug this fix
+        # exists to close, just hiding behind Get-PendingState's own
+        # incidental timing. This test now probes File.Exists directly, the
+        # same way that gap was actually found, so it would have failed
+        # against File.Replace instead of passing.
+        #
+        # The current implementation is
+        # [System.IO.File]::Move($tempPath, $script:StatePath, $true) --
+        # MoveFileEx with MOVEFILE_REPLACE_EXISTING. (Move-Item -Force was
+        # tried before File.Replace and rejected outright: ~18% missing
+        # under the same style of stress test -- see Save-PendingState's
+        # comment for the full history of all three attempts.)
         #
         # Write cadence here (~5ms between writes, a realistic-sized
         # message) is deliberately NOT an adversarial zero-delay firehose --
-        # empirically, even Get-PendingState's retry-hardened reader (see
-        # its own comment) cannot achieve a perfect 100% success rate
-        # against a writer that NEVER pauses, because Windows' own file-
-        # replace operation briefly blocks concurrent opens and an unbroken
-        # stream of them can occasionally outlast any bounded retry budget.
-        # That is an accepted, documented residual (degrades to the same
-        # "treated as empty" fallback already established for corrupt
-        # files), not something a real hook-firing pattern would ever
-        # trigger -- a real hook writes once and exits. This test proves
-        # the property that actually matters: under realistic concurrent
-        # access, reads are reliably consistent, not that the reader can
-        # survive an unrealistic adversarial write-storm.
+        # a real hook writes once and exits; this proves the property that
+        # actually matters under realistic concurrent access.
         $statePath = Join-Path $TestDrive 'pending.json'
         # Explicit, test-local mutex name -- $script:MutexName inside the
         # module is not visible from here, and this must be the SAME name
@@ -280,21 +282,22 @@ Describe 'PendingState' {
 
         try {
             $deadline = (Get-Date).AddSeconds(5)
-            $reads = 0
+            $probes = 0
+            $misses = 0
             while ((Get-Date) -lt $deadline) {
-                # A transient "file in use" from the raw Windows handle-open
-                # call is a different (and acceptable) failure mode than the
-                # bug under test: it's a loud, catchable exception every
-                # caller already handles (notify-ha.ps1/ha-bridge.ps1 both
-                # wrap every state read in their own try/catch), not a
-                # SILENT wrong answer. What this test must never see is a
-                # successful read that silently reports an empty/torn state
-                # -- so only a clean read counts as a `reads` sample.
-                try { $state = Get-PendingState } catch { continue }
-                $reads++
-                $state.sessions.ContainsKey('seed') | Should -BeTrue -Because 'an atomic write must never be visible to an unlocked reader as a torn/empty file'
+                # Direct, unmediated existence check -- no Get-Content, no
+                # retry loop, no JSON parse -- so nothing can phase-shift
+                # this sampling window away from the writer's swap the way
+                # Get-PendingState's own retry loop did in the original,
+                # under-powered version of this test.
+                $probes++
+                if (-not [System.IO.File]::Exists($statePath)) { $misses++ }
             }
-            $reads | Should -BeGreaterThan 0 -Because 'the test is meaningless if it never actually raced a concurrent write'
+            $probes | Should -BeGreaterThan 0 -Because 'the test is meaningless if it never actually raced a concurrent write'
+            # This is the actual measured result, reported so a future
+            # reader (or CI log) doesn't have to trust an assertion blindly.
+            Write-Host "Save-PendingState atomicity probe: $misses / $probes direct File.Exists misses"
+            $misses | Should -Be 0 -Because "File.Move with MOVEFILE_REPLACE_EXISTING must never leave the destination transiently missing (measured $misses/$probes misses)"
         } finally {
             Set-Content -Path $stopFile -Value 'stop'
             $writerJob | Wait-Job -Timeout 15 | Out-Null
