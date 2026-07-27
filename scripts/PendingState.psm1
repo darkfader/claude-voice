@@ -126,7 +126,7 @@ function Set-PendingStateExpiryHours {
     $script:ExpiryHours = $Hours
 }
 
-function New-EmptyPendingState { @{ sessions = @{}; cursor = $null; activeSession = $null; activeSince = $null; displayedSession = $null } }
+function New-EmptyPendingState { @{ sessions = @{}; known = @{}; cursor = $null; activeSession = $null; activeSince = $null; displayedSession = $null } }
 
 function Get-PendingState {
     if (-not (Test-Path $script:StatePath)) { return New-EmptyPendingState }
@@ -193,7 +193,31 @@ function Get-PendingState {
             if ($since -lt $cutoff) { $state.sessions.Remove($id) | Out-Null }
         }
     }
-    if ($state.cursor -and -not $state.sessions.ContainsKey($state.cursor)) { $state.cursor = $null }
+    # `known` outlives `sessions`: the dial cycles every session seen
+    # recently, not just the ones currently waiting on the user, or it would
+    # be inert whenever fewer than two things are pending -- strictly worse
+    # than the volume knob it replaces. Defaulted rather than migrated: a
+    # pending.json written before this field existed is runtime state, not
+    # data worth preserving. Must be defaulted BEFORE the cursor check
+    # below, which dereferences it.
+    if (-not $state.ContainsKey('known') -or $null -eq $state.known -or
+        $state.known -isnot [System.Collections.IDictionary]) {
+        $state.known = @{}
+    }
+    foreach ($id in @($state.known.Keys)) {
+        [datetime]$seen = [datetime]::MinValue
+        if ([datetime]::TryParse($state.known[$id].lastSeen, [ref]$seen)) {
+            if ($seen -lt $cutoff) { $state.known.Remove($id) | Out-Null }
+        }
+    }
+
+    # Widened to `known` (was `sessions` only). The cursor now legitimately
+    # points at sessions that are merely known -- that is the whole point of
+    # the dial being a session switcher rather than a pending-list switcher
+    # -- so validating against the pending map alone would erase the dial's
+    # position on every single read.
+    if ($state.cursor -and -not $state.sessions.ContainsKey($state.cursor) -and
+        -not $state.known.ContainsKey($state.cursor)) { $state.cursor = $null }
     if (-not $state.ContainsKey('activeSession')) { $state.activeSession = $null }
     if (-not $state.ContainsKey('activeSince'))   { $state.activeSince = $null }
     # Deliberately NOT reset to $null when it no longer matches a live
@@ -287,6 +311,39 @@ function Clear-DisplayedSession {
     }
 }
 
+function Register-KnownSession {
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        [Parameter(Mandatory)][string]$Project,
+        [Parameter(Mandatory)][string]$Cwd
+    )
+    Invoke-WithPendingStateLock {
+        $state = Get-PendingState
+        $now   = (Get-Date).ToString('o')
+        if ($state.known.ContainsKey($SessionId)) {
+            $state.known[$SessionId].lastSeen = $now
+        } else {
+            # No -TakenSlots: this is the session's BASE colour. Collision
+            # nudging is exclusively a pending-session concern and stays in
+            # Register-PendingNotification, so a nudged session's `sessions`
+            # colour and its `known` colour can legitimately differ -- the
+            # ring uses whichever matches what it is currently showing.
+            $slot = Resolve-SessionColorSlot -ProjectPath $Cwd
+            $ords = @($state.known.Values | Where-Object { $_.project -eq $Project } | ForEach-Object { $_.ordinal })
+            $state.known[$SessionId] = @{
+                project   = $Project
+                cwd       = $Cwd
+                color     = ConvertFrom-HueSlot -Slot $slot
+                slot      = $slot
+                ordinal   = Get-SessionOrdinal -TakenOrdinals $ords
+                firstSeen = $now
+                lastSeen  = $now
+            }
+        }
+        Save-PendingState -State $state
+    }
+}
+
 function Register-PendingNotification {
     param(
         [Parameter(Mandatory)][string]$SessionId,
@@ -340,4 +397,4 @@ function Resolve-PendingSession {
     }
 }
 
-Export-ModuleMember -Function Set-PendingStatePath, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock
+Export-ModuleMember -Function Set-PendingStatePath, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-KnownSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock

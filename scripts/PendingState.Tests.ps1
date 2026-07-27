@@ -363,3 +363,76 @@ Describe 'PendingState' {
         }
     }
 }
+
+Describe 'known session registry' {
+    BeforeEach {
+        $script:knownStatePath = Join-Path $TestDrive 'known.json'
+        # Same reasoning as the Describe above: $TestDrive is shared across
+        # every It, so a leftover file would leak known entries into the next
+        # test and quietly break the ordinal/expiry assertions.
+        if (Test-Path $script:knownStatePath) { Remove-Item -Path $script:knownStatePath -Force }
+        Set-PendingStatePath -Path $script:knownStatePath
+        Set-PendingStateMutexName -Name "Global\ClaudeVoiceKnownTest_$([guid]::NewGuid().ToString('N'))"
+        Set-PendingStateExpiryHours -Hours 4
+    }
+
+    It 'registers a session with base colour, ordinal 1, and matching first/last seen' {
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/Users/darkf/git/HomeAssistant'
+        $k = (Get-PendingState).known['s1']
+        $k.project     | Should -Be 'HomeAssistant'
+        $k.cwd         | Should -Be 'C:/Users/darkf/git/HomeAssistant'
+        $k.ordinal     | Should -Be 1
+        $k.color.Count | Should -Be 3
+        $k.firstSeen   | Should -Be $k.lastSeen
+    }
+
+    It 're-registering bumps lastSeen but preserves firstSeen, colour and ordinal' {
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        $before = (Get-PendingState).known['s1']
+        Start-Sleep -Milliseconds 20
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        $after = (Get-PendingState).known['s1']
+        $after.firstSeen | Should -Be $before.firstSeen
+        $after.lastSeen  | Should -BeGreaterThan $before.lastSeen
+        $after.color     | Should -Be $before.color
+        $after.ordinal   | Should -Be $before.ordinal
+    }
+
+    It 'gives a second session in the same project ordinal 2' {
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        Register-KnownSession -SessionId 's2' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        (Get-PendingState).known['s2'].ordinal | Should -Be 2
+    }
+
+    It 'expires known entries older than the expiry window on read' {
+        Register-KnownSession -SessionId 's1' -Project 'Old' -Cwd 'C:/git/Old'
+        Set-PendingStateExpiryHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
+    }
+
+    It 'defaults known to an empty map for a state file written before it existed' {
+        $legacy = Join-Path $TestDrive 'legacy.json'
+        if (Test-Path $legacy) { Remove-Item -Path $legacy -Force }
+        Set-PendingStatePath -Path $legacy
+        '{"sessions":{},"cursor":null,"activeSession":null,"activeSince":null,"displayedSession":null}' |
+            Set-Content -Path $legacy
+        $state = Get-PendingState
+        $state.ContainsKey('known') | Should -BeTrue
+        $state.known.Count | Should -Be 0
+    }
+
+    It 'keeps a cursor that names a known but non-pending session' {
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        Set-PendingCursor -SessionId 's1'
+        (Get-PendingState).cursor | Should -Be 's1'
+    }
+
+    It 'clears a cursor that names neither a pending nor a known session' {
+        Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
+        Set-PendingCursor -SessionId 's1'
+        Set-PendingStateExpiryHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        (Get-PendingState).cursor | Should -BeNullOrEmpty
+    }
+}

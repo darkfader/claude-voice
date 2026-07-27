@@ -75,6 +75,14 @@ try {
     # previously both read othersCount=0 (both take the ring) and both resolve
     # the same colour slot -- defeating the collision-avoidance the whole
     # design exists for.
+    # Every event registers the session as known, including 'stop' and
+    # 'clear'. The dial cycles KNOWN sessions, not pending ones, so a session
+    # you have merely typed in has to be reachable -- not only one that is
+    # currently waiting on you. Runs before the kill-switch check for the same
+    # reason the pending bookkeeping does: local state should stay accurate
+    # even while notifications are switched off.
+    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd
+
     $othersCount = 0
     switch ($Event) {
         'notification' {
