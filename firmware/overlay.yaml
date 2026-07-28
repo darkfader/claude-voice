@@ -98,3 +98,24 @@ sensor:
     name: "Dial Rotation"
     on_clockwise: !remove
     on_anticlockwise: !remove
+
+# Self-reported build identity. Exists because a silent no-op build (see
+# claude-voice/README.md) let two OTAs report success while the device kept
+# running the previous image, with nothing in HA to contradict it. The
+# compilation time is baked in at build, so this cannot lie about which
+# binary is executing.
+#
+# `ring1` is the ring-state protocol version. Bump it whenever the encoding
+# in text.claude_ring_state changes incompatibly, so the bridge can tell it
+# is talking to firmware that predates the format it speaks.
+text_sensor:
+  - platform: template
+    name: "Firmware Build"
+    id: firmware_build
+    entity_category: diagnostic
+    icon: mdi:chip
+    lambda: |-
+      char build_time_buf[Application::BUILD_TIME_STR_SIZE];
+      App.get_build_time_string(build_time_buf);
+      return {std::string(build_time_buf) + " ring1"};
+    update_interval: 60s
