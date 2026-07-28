@@ -6,7 +6,7 @@
 ./claude-voice/scripts/Export-FirmwareApi.ps1
 ```
 
-Generated 2026-07-28 04:13 from `custom-voice-pe.yaml`.
+Generated 2026-07-28 04:39 from `custom-voice-pe.yaml`.
 
 ## Entities exposed to Home Assistant
 
@@ -17,25 +17,29 @@ entity actually surfaces in HA, not the ESPHome YAML key it is declared under --
 notably, ESPHome `text_sensor:` entities are listed here as `sensor`, since HA
 has no `text_sensor` domain.
 
-Two things this table cannot show: (1) a handful of live entities --
-`assist_satellite`, and 5 of the 6 `select.*` entities (assistant x2, wake word
-x2, finished-speaking detection) -- are synthesized by the `voice_assistant`/
-`micro_wake_word` components from *other* config (e.g. having two wake-word
-slots configured) rather than from a `name:` key, so they cannot be recovered
-by scanning for `name:`. (2) rows here with `disabled_by_default: true` in the
-config (currently the `Beta firmware` switch and the `Restart` button) exist as
-entities but report no state in HA until a user enables them.
+Two categories of real HA entity this table cannot ever show, by nature of
+parsing config text rather than querying HA:
+
+1. Entities an ESPHome component synthesizes from *other* configuration
+   instead of declaring with its own `name:` key -- e.g. `voice_assistant`/
+   `micro_wake_word` create extra `assist_satellite`/`select.*` entities in HA
+   when multiple wake-word or assistant pipeline slots are configured. There is
+   no `name:` text anywhere in the merged config for this parser to find.
+2. Rows below marked *(disabled by default)* are declared entities
+   (`disabled_by_default: true` in the merged config) that report no live
+   state in HA until a user enables them -- the table can show that they
+   *exist*, not whether HA currently reports a state for them.
 
 | Domain | Name | Platform |
 |---|---|---|
-| `button` | Restart | `restart` |
+| `button` | Restart *(disabled by default)* | `restart` |
 | `event` | Button press | `template` |
 | `light` | LED Ring | `partition` |
 | `media_player` | Media Player | `speaker_source` |
 | `select` | Wake word sensitivity | `template` |
 | `sensor` | Dial Rotation | `rotary_encoder` |
 | `sensor` | Firmware Build | `template` |
-| `switch` | Beta firmware | `template` |
+| `switch` | Beta firmware *(disabled by default)* | `template` |
 | `switch` | Mute | `template` |
 | `switch` | Wake sound | `template` |
 | `text` | Claude Ring State | `template` |

@@ -53,6 +53,7 @@ $curPlatform = $null
 $curName = $null
 $curNameSeen = $false
 $curInternal = $false
+$curDisabled = $false
 
 function Flush-Entity {
     if ($script:inEntity -and $script:curNameSeen -and -not $script:curInternal) {
@@ -72,7 +73,15 @@ function Flush-Entity {
         # silently dropped it, since '' is falsy; tracking "was a name: key
         # seen at all" separately from "what string did it hold" avoids that.
         $displayName = if ([string]::IsNullOrEmpty($script:curName)) { '*(device name)*' } else { $script:curName }
-        $script:rows += [PSCustomObject]@{ Domain = $displayDomain; Name = $displayName; Platform = $script:curPlatform }
+        $script:rows += [PSCustomObject]@{
+            Domain            = $displayDomain
+            Name              = $displayName
+            Platform          = $script:curPlatform
+            # Tracked (not hardcoded) so the doc's "cannot show" paragraph
+            # and the table's per-row marker stay accurate as entities gain
+            # or lose disabled_by_default -- see review finding #3.
+            DisabledByDefault = $script:curDisabled
+        }
     }
 }
 
@@ -90,6 +99,7 @@ foreach ($line in $merged) {
         $curName = $null
         $curNameSeen = $false
         $curInternal = $false
+        $curDisabled = $false
         $inEntity = $true
         continue
     }
@@ -102,10 +112,52 @@ foreach ($line in $merged) {
         $curInternal = $true
         continue
     }
+    if ($inEntity -and $text -match '^    disabled_by_default:\s*true\s*$') {
+        $curDisabled = $true
+        continue
+    }
 }
 Flush-Entity
 
+# --- Sanity floor ----------------------------------------------------------
+#
+# `esphome config`'s output format is not a stable API (see above). The
+# hard-failure case is already covered: a broken YAML makes `esphome config`
+# exit non-zero and $OutPath is never touched. But if a FUTURE ESPHome
+# version changes its indentation convention while still exiting 0, this
+# indentation-keyed parser doesn't error -- it just quietly stops matching
+# and would overwrite a correct doc with an empty or near-empty table. That
+# is the same "confidently wrong document" failure the brief's original
+# over-matching regexes were rejected for, just moved from matching too much
+# to matching too little.
+#
+# Real count today is 12 entities across 9 domains. A legitimate future
+# firmware change might add or remove a handful of entities in one edit, but
+# a parser that has stopped tracking indentation correctly typically loses
+# almost everything at once (0, or a stray single-digit count), not one or
+# two rows. 6 -- roughly half of today's count -- sits comfortably below any
+# single plausible entity-list edit and comfortably above "the parser broke".
+$MinPlausibleEntities = 6
+if ($rows.Count -lt $MinPlausibleEntities) {
+    Write-Error ("Parsed only $($rows.Count) entities (expected at least $MinPlausibleEntities). " +
+        "esphome config's output shape probably changed and this parser silently stopped matching " +
+        "it. Refusing to overwrite $OutPath with a doc that may now be wrong -- inspect a fresh " +
+        "'esphome config' dump against the indentation this script assumes (see the Parsing " +
+        "comment above) before regenerating.")
+    exit 1
+}
+
 # --- Render --------------------------------------------------------------
+
+# A `|` inside a Markdown table cell breaks that row's column alignment.
+# Entity names are free text (someone could rename "Mute" to "On | Off"
+# tomorrow), so escape it rather than assume it never happens -- zero-cost
+# guard, per review finding #4. Named Format- (not Escape-) to satisfy
+# PSScriptAnalyzer's approved-verb check; there is no "Escape" verb.
+function Format-MdCell([string]$s) {
+    if ($null -eq $s) { return $s }
+    return $s -replace '\|', '\|'
+}
 
 $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine('# Firmware API')
@@ -127,19 +179,25 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine('notably, ESPHome `text_sensor:` entities are listed here as `sensor`, since HA')
 [void]$sb.AppendLine('has no `text_sensor` domain.')
 [void]$sb.AppendLine()
-[void]$sb.AppendLine('Two things this table cannot show: (1) a handful of live entities --')
-[void]$sb.AppendLine('`assist_satellite`, and 5 of the 6 `select.*` entities (assistant x2, wake word')
-[void]$sb.AppendLine('x2, finished-speaking detection) -- are synthesized by the `voice_assistant`/')
-[void]$sb.AppendLine('`micro_wake_word` components from *other* config (e.g. having two wake-word')
-[void]$sb.AppendLine('slots configured) rather than from a `name:` key, so they cannot be recovered')
-[void]$sb.AppendLine('by scanning for `name:`. (2) rows here with `disabled_by_default: true` in the')
-[void]$sb.AppendLine('config (currently the `Beta firmware` switch and the `Restart` button) exist as')
-[void]$sb.AppendLine('entities but report no state in HA until a user enables them.')
+[void]$sb.AppendLine('Two categories of real HA entity this table cannot ever show, by nature of')
+[void]$sb.AppendLine('parsing config text rather than querying HA:')
+[void]$sb.AppendLine()
+[void]$sb.AppendLine('1. Entities an ESPHome component synthesizes from *other* configuration')
+[void]$sb.AppendLine('   instead of declaring with its own `name:` key -- e.g. `voice_assistant`/')
+[void]$sb.AppendLine('   `micro_wake_word` create extra `assist_satellite`/`select.*` entities in HA')
+[void]$sb.AppendLine('   when multiple wake-word or assistant pipeline slots are configured. There is')
+[void]$sb.AppendLine('   no `name:` text anywhere in the merged config for this parser to find.')
+[void]$sb.AppendLine('2. Rows below marked *(disabled by default)* are declared entities')
+[void]$sb.AppendLine('   (`disabled_by_default: true` in the merged config) that report no live')
+[void]$sb.AppendLine('   state in HA until a user enables them -- the table can show that they')
+[void]$sb.AppendLine('   *exist*, not whether HA currently reports a state for them.')
 [void]$sb.AppendLine()
 [void]$sb.AppendLine('| Domain | Name | Platform |')
 [void]$sb.AppendLine('|---|---|---|')
 foreach ($r in ($rows | Sort-Object Domain, Name)) {
-    [void]$sb.AppendLine("| ``$($r.Domain)`` | $($r.Name) | ``$($r.Platform)`` |")
+    $name = Format-MdCell $r.Name
+    if ($r.DisabledByDefault) { $name = "$name *(disabled by default)*" }
+    [void]$sb.AppendLine("| ``$(Format-MdCell $r.Domain)`` | $name | ``$(Format-MdCell $r.Platform)`` |")
 }
 [void]$sb.AppendLine()
 [void]$sb.AppendLine(@'
