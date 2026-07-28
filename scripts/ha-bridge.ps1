@@ -5,6 +5,7 @@ Import-Module (Join-Path $PSScriptRoot 'ButtonAction.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'SessionColor.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'RingDisplay.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'AmbientState.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'RingState.psm1') -Force
 
 $logPath = Join-Path $PSScriptRoot '..\state\ha-bridge.log'
 
@@ -140,6 +141,22 @@ function Get-SessionSpokenName {
 # so notify-ha.ps1 shares the exact same "hand the ring to the oldest
 # remaining pending session" logic instead of reimplementing it.
 
+function Publish-RingState {
+    <#
+    .SYNOPSIS
+    Re-publish the ring picture from current state.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Connection)
+    try {
+        $s = Get-PendingState
+        Invoke-HaRingState -Connection $Connection -Value (
+            Get-RingStateString -KnownSessions $s.known -Cursor $s.cursor
+        ) | Out-Null
+    } catch {
+        Write-BridgeLog "ring state publish failed (continuing): $_"
+    }
+}
+
 function Invoke-DialRotationEvent {
     param(
         [Parameter(Mandatory)][hashtable]$Connection,
@@ -183,6 +200,7 @@ function Invoke-DialRotationEvent {
     $script:DialSettleSession = $next
     $script:DialSettleAt = (Get-Date).AddMilliseconds($script:DialSettleMs)
     Write-BridgeLog -Level info -Message "dial $Direction -> $(Get-SessionSpokenName -Entry $entry)"
+    Publish-RingState -Connection $Connection
 }
 
 function Invoke-DialSettleCheck {
@@ -259,6 +277,7 @@ function Invoke-ButtonEvent {
             } else {
                 Invoke-HaLed -Connection $Connection -Rgb $entry.color -Brightness 100 | Out-Null
             }
+            Publish-RingState -Connection $Connection
         }
         'focus' {
             $entry = $state.sessions[$result.SessionId]
@@ -285,6 +304,7 @@ function Invoke-ButtonEvent {
                 Invoke-HaChime -Connection $Connection | Out-Null
                 Set-RemainingLed -Connection $Connection
             }
+            Publish-RingState -Connection $Connection
         }
         'dismiss' {
             Clear-PendingSession -SessionId $result.SessionId

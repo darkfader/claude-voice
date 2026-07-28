@@ -5,6 +5,10 @@ $script:SatelliteEntity = 'assist_satellite.home_assistant_voice_0932b4_assist_s
 $script:MuteEntity = 'switch.home_assistant_voice_0932b4_mute'
 $script:KillSwitchEntity = 'input_boolean.claude_notifications_enabled'
 $script:ChimeMediaId = 'media-source://media_source/local/claude-voice/chime.wav'
+# Area-prefixed: this device's HA entity ids are not predictable from the
+# ESPHome name. Confirmed live in Task 2 -- do not "fix" back to the
+# unprefixed form, that entity does not exist.
+$script:RingStateEntityId = 'text.bedroom_home_assistant_voice_0932b4_claude_ring_state'
 
 function Read-DotEnv {
     param([Parameter(Mandatory)][string]$Path)
@@ -151,4 +155,23 @@ function Invoke-HaAnnounce {
     } -TimeoutSec 10
 }
 
-Export-ModuleMember -Function Get-HaConnection, Invoke-HaService, Get-HaState, Test-HaMuted, Test-HaNotificationsEnabled, Invoke-HaLed, Invoke-HaChime, Invoke-HaAnnounce
+function Invoke-HaRingState {
+    <#
+    .SYNOPSIS
+    Push the per-thread ring state to the device.
+
+    .DESCRIPTION
+    State only, never frames: all animation runs on-device, so this is called
+    when something changes, not on a timer.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Connection,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+    )
+    Invoke-HaService -Connection $Connection -Domain text -Service set_value -Body @{
+        entity_id = $script:RingStateEntityId
+        value     = $Value
+    }
+}
+
+Export-ModuleMember -Function Get-HaConnection, Invoke-HaService, Get-HaState, Test-HaMuted, Test-HaNotificationsEnabled, Invoke-HaLed, Invoke-HaChime, Invoke-HaAnnounce, Invoke-HaRingState

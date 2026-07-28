@@ -28,6 +28,7 @@ try {
     Import-Module (Join-Path $PSScriptRoot 'RingDisplay.psm1')  -Force
     Import-Module (Join-Path $PSScriptRoot 'WindowFocus.psm1')  -Force
     Import-Module (Join-Path $PSScriptRoot 'SessionTitle.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'RingState.psm1')    -Force
 
     # --- read the hook payload -------------------------------------------------
     $payload = $null
@@ -202,6 +203,20 @@ try {
     switch ($plan.Sound) {
         'chime'    { Invoke-HaChime    -Connection $conn | Out-Null }
         'announce' { Invoke-HaAnnounce -Connection $conn -Text $plan.AnnounceText | Out-Null }
+    }
+
+    # Push the whole-ring picture last, after every state mutation above has
+    # landed, so the string reflects final state rather than an intermediate.
+    # 'A' (arriving) is sent only for a genuinely new notification -- it is
+    # what makes the firmware run its 2s whole-ring flash, and repeating it on
+    # every hook would re-flash the ring constantly.
+    try {
+        $ringState = Get-PendingState
+        $arriving = if ($Event -eq 'notification' -and $plan.Led.Flash) { $sessionId } else { $null }
+        $ringValue = Get-RingStateString -KnownSessions $ringState.known -Cursor $ringState.cursor -ArrivingSessionId $arriving
+        Invoke-HaRingState -Connection $conn -Value $ringValue | Out-Null
+    } catch {
+        Write-Warning "ring state publish failed (non-fatal): $_"
     }
 } catch {
     Write-Warning "notify-ha.ps1 failed non-fatally: $_"
