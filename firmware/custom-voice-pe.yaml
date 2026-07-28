@@ -59,3 +59,29 @@ sensor:
             - script.execute:
                 id: claude_held_volume
                 increase_volume: false
+
+# Claim the ring's IDLE branch only. Every stock state -- wake word, timer,
+# volume, mute, jack, factory reset -- still preempts this, which is forced
+# by the shared hardware, not a choice.
+#
+# The else branch is the upstream body verbatim: turn the effect layer off
+# and restore whatever colour the user has set on led_ring. Losing that would
+# mean the ring went dead whenever no threads existed, rather than reverting
+# to how the device behaved before this feature.
+script:
+  - id: !extend control_leds_voice_assistant_idle_phase
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ring_count) > 0;'
+          then:
+            - light.turn_on:
+                id: voice_assistant_leds
+                effect: "Claude Threads"
+          else:
+            - light.turn_off: voice_assistant_leds
+            - if:
+                condition:
+                  light.is_on: led_ring
+                then:
+                  light.turn_on: led_ring
