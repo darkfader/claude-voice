@@ -119,3 +119,26 @@ text_sensor:
       App.get_build_time_string(build_time_buf);
       return {std::string(build_time_buf) + " ring1"};
     update_interval: 60s
+
+# Ring state, written by the PC. One group per thread, semicolons between:
+#   <ringSlot>,<rrggbb>,<state>   e.g.  3,dfff00,w;7,80ff00,i
+# States: i idle, w working, s selected, a attention, A arriving.
+#
+# A text entity rather than a stream of light calls because all animation
+# runs on-device: an orbit at the strip's 66fps ceiling driven over HTTP
+# would hammer Home Assistant and still stutter. The PC pushes state only
+# when it changes.
+#
+# optimistic: true -- there is no external system of record for this value;
+# the device simply accepts what it is told.
+text:
+  - platform: template
+    name: "Claude Ring State"
+    id: claude_ring_state
+    optimistic: true
+    min_length: 0
+    max_length: 255
+    mode: text
+    entity_category: config
+    icon: mdi:led-strip-variant
+    initial_value: ""
