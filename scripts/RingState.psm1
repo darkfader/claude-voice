@@ -26,7 +26,16 @@ $script:StatePriority['i'] = 4
 
 function ConvertTo-RingHex {
     param([Parameter(Mandatory)][int[]]$Rgb)
-    '{0:x2}{1:x2}{2:x2}' -f $Rgb[0], $Rgb[1], $Rgb[2]
+    # Always emit exactly six hex digits: the firmware parser depends on the
+    # fixed rrggbb width and drops any group whose hex field is a different
+    # length, so a short/absent `color` (upstream computes it, but a
+    # malformed entry should still be possible) would otherwise silently
+    # vanish from the ring instead of failing loudly. Pad missing trailing
+    # components with 0 -- a wrong/dim colour beats a missing thread.
+    $r = if ($Rgb.Count -ge 1) { $Rgb[0] } else { 0 }
+    $g = if ($Rgb.Count -ge 2) { $Rgb[1] } else { 0 }
+    $b = if ($Rgb.Count -ge 3) { $Rgb[2] } else { 0 }
+    '{0:x2}{1:x2}{2:x2}' -f $r, $g, $b
 }
 
 function Get-RingStateString {
@@ -55,6 +64,13 @@ function Get-RingStateString {
             [datetime]$since = [datetime]::MinValue
             if ([datetime]::TryParse([string]$e.activitySince, [ref]$since)) {
                 if ($since -lt $Now.AddMinutes(-1 * $WorkingExpiryMinutes)) { $activity = 'idle' }
+            } else {
+                # Fail safe: an unparseable or missing activitySince must
+                # not read as "never expires". A thread we cannot date is a
+                # thread we cannot claim is still working -- treat it the
+                # same as the crashed-terminal case this expiry exists to
+                # catch, i.e. already expired.
+                $activity = 'idle'
             }
         }
 
