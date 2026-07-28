@@ -521,7 +521,15 @@ Describe 'ring slot and activity on known sessions' {
     It 'defaults activity to idle for a state file written before the field existed' {
         $legacy = Join-Path $TestDrive 'legacy-ring.json'
         Set-PendingStatePath -Path $legacy
-        '{"sessions":{},"known":{"old":{"project":"P","cwd":"C:/git/P","firstSeen":"2026-07-28T00:00:00.0000000+02:00","lastSeen":"2026-07-28T00:00:00.0000000+02:00"}},"cursor":null,"activeSession":null,"activeSince":null,"displayedSession":null}' |
+        # firstSeen/lastSeen are derived from Get-Date (comfortably inside
+        # the 4h expiry window set in BeforeEach) rather than a fixed
+        # absolute literal. A hardcoded timestamp would eventually age past
+        # the cutoff and Get-PendingState's expiry loop would remove this
+        # entry before the defaulting code -- or the assertions -- ever ran,
+        # making the test fail spuriously (and permanently) once real time
+        # caught up to the literal. Found in review.
+        $recentIso = (Get-Date).AddHours(-1).ToString('o')
+        ('{{"sessions":{{}},"known":{{"old":{{"project":"P","cwd":"C:/git/P","firstSeen":"{0}","lastSeen":"{0}"}}}},"cursor":null,"activeSession":null,"activeSince":null,"displayedSession":null}}' -f $recentIso) |
             Set-Content -Path $legacy
         $k = (Get-PendingState).known['old']
         $k.activity | Should -Be 'idle'
