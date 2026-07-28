@@ -142,3 +142,82 @@ text:
     entity_category: config
     icon: mdi:led-strip-variant
     initial_value: ""
+    on_value:
+      - lambda: |-
+          // Parse "<slot>,<rrggbb>,<state>;..." into the ring_* globals.
+          // Runs only when the value changes -- never per frame.
+          const std::string &s = x;
+          int n = 0;
+          size_t pos = 0;
+          while (pos < s.size() && n < 12) {
+            size_t end = s.find(';', pos);
+            if (end == std::string::npos) end = s.size();
+            std::string grp = s.substr(pos, end - pos);
+            pos = end + 1;
+
+            size_t c1 = grp.find(',');
+            if (c1 == std::string::npos) continue;
+            size_t c2 = grp.find(',', c1 + 1);
+            if (c2 == std::string::npos) continue;
+
+            int slot = atoi(grp.substr(0, c1).c_str());
+            if (slot < 0 || slot > 11) continue;
+            std::string hex = grp.substr(c1 + 1, c2 - c1 - 1);
+            if (hex.size() != 6) continue;
+            char st = grp[c2 + 1];
+
+            uint32_t v = (uint32_t) strtoul(hex.c_str(), nullptr, 16);
+            id(ring_slot)[n] = (uint8_t) slot;
+            id(ring_r)[n] = (uint8_t) ((v >> 16) & 0xFF);
+            id(ring_g)[n] = (uint8_t) ((v >> 8) & 0xFF);
+            id(ring_b)[n] = (uint8_t) (v & 0xFF);
+
+            if (st == 'A') {
+              // Arrival: start the whole-ring flash and treat it as attention
+              // from here on. Stored this way so no second message is needed.
+              id(ring_arrive_ms) = millis();
+              id(ring_arrive_r) = id(ring_r)[n];
+              id(ring_arrive_g) = id(ring_g)[n];
+              id(ring_arrive_b) = id(ring_b)[n];
+              st = 'a';
+            }
+            id(ring_state)[n] = st;
+            n++;
+          }
+          id(ring_count) = n;
+          ESP_LOGD("claude_ring", "parsed %d threads from '%s'", n, s.c_str());
+
+# Globals for the per-thread ring parse (Task 6). Fixed-size, parsed once on
+# text.claude_ring_state's on_value -- not per render frame -- because the
+# render loop (Task 7) runs at 15ms and this device also runs wake-word
+# inference; re-parsing a string 66x/sec would be wasteful and potentially
+# harmful.
+globals:
+  - id: ring_count
+    type: int
+    initial_value: '0'
+  - id: ring_slot
+    type: uint8_t[12]
+  - id: ring_r
+    type: uint8_t[12]
+  - id: ring_g
+    type: uint8_t[12]
+  - id: ring_b
+    type: uint8_t[12]
+  - id: ring_state
+    type: char[12]
+  # millis() when an arrival was last announced; 0 = no flash pending. The
+  # 2s whole-ring flash is a pure function of elapsed time from here, which
+  # is why arrival needs no follow-up message from the PC.
+  - id: ring_arrive_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: ring_arrive_r
+    type: uint8_t
+    initial_value: '0'
+  - id: ring_arrive_g
+    type: uint8_t
+    initial_value: '0'
+  - id: ring_arrive_b
+    type: uint8_t
+    initial_value: '0'
