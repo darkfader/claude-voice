@@ -91,3 +91,45 @@ Describe 'Get-SessionDisplayName' {
         Get-SessionDisplayName -Project 'HomeAssistant' -Ordinal 2 | Should -Be 'HomeAssistant 2'
     }
 }
+
+Describe 'Resolve-RingSlot' {
+    It 'returns a slot in 0..11' {
+        $s = Resolve-RingSlot -ProjectPath 'C:/git/HomeAssistant'
+        $s | Should -BeGreaterOrEqual 0
+        $s | Should -BeLessOrEqual 11
+    }
+
+    It 'is stable for the same path across calls' {
+        $a = Resolve-RingSlot -ProjectPath 'C:/git/HomeAssistant'
+        $b = Resolve-RingSlot -ProjectPath 'C:/git/HomeAssistant'
+        $a | Should -Be $b
+    }
+
+    It 'normalises separators and case like the hue slot does' {
+        Resolve-RingSlot -ProjectPath 'C:\git\HomeAssistant' |
+            Should -Be (Resolve-RingSlot -ProjectPath 'c:/GIT/homeassistant/')
+    }
+
+    It 'nudges off a taken slot' {
+        $base = Resolve-RingSlot -ProjectPath 'C:/git/HomeAssistant'
+        $next = Resolve-RingSlot -ProjectPath 'C:/git/HomeAssistant' -TakenSlots @($base)
+        $next | Should -Not -Be $base
+    }
+
+    It 'gives twelve same-path sessions twelve distinct slots' {
+        $taken = @()
+        foreach ($i in 1..12) {
+            $s = Resolve-RingSlot -ProjectPath 'C:/git/P' -TakenSlots $taken
+            $taken += $s
+        }
+        ($taken | Select-Object -Unique).Count | Should -Be 12
+    }
+
+    It 'falls back to the base slot when all twelve are taken' {
+        # Thirteenth thread: there is no free seat. Returning the base slot
+        # (rather than looping forever or erroring) is what lets the encoder
+        # simply cap the drawn list at twelve.
+        $base = Resolve-RingSlot -ProjectPath 'C:/git/P'
+        Resolve-RingSlot -ProjectPath 'C:/git/P' -TakenSlots (0..11) | Should -Be $base
+    }
+}

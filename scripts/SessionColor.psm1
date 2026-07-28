@@ -54,6 +54,43 @@ function Resolve-SessionColorSlot {
     $preferred
 }
 
+$script:RingSlotCount = 12
+
+function Resolve-RingSlot {
+    <#
+    .SYNOPSIS
+    A thread's home position on the 12-LED ring, 0-11.
+
+    .DESCRIPTION
+    Separate from the hue slot deliberately. Hue is mod 16, position is mod
+    12, and the two are nudged against different occupancy sets -- deriving
+    one from the other would couple a thread's colour to how many threads
+    happen to share the ring.
+
+    Same hashing as Resolve-SessionColorSlot: SHA256, never String.GetHashCode,
+    because .NET Core randomises string hashing per process and a thread's
+    seat must survive a restart.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectPath,
+        [int[]]$TakenSlots = @()
+    )
+    $norm = Get-NormalisedProjectPath -Path $ProjectPath
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($norm)) } finally { $sha.Dispose() }
+    $base = [int]([BitConverter]::ToUInt32($bytes, 0) % [uint32]$script:RingSlotCount)
+
+    if ($TakenSlots -notcontains $base) { return $base }
+    for ($i = 1; $i -lt $script:RingSlotCount; $i++) {
+        $candidate = ($base + $i) % $script:RingSlotCount
+        if ($TakenSlots -notcontains $candidate) { return $candidate }
+    }
+    # Every seat taken. The encoder caps the drawn list at twelve, so this
+    # thread simply will not be drawn; returning the base keeps the value
+    # deterministic instead of erroring in a hook.
+    $base
+}
+
 function Get-SessionOrdinal {
     param([int[]]$TakenOrdinals = @())
     $n = 1
@@ -66,4 +103,4 @@ function Get-SessionDisplayName {
     if ($Ordinal -le 1) { $Project } else { "$Project $Ordinal" }
 }
 
-Export-ModuleMember -Function Get-NormalisedProjectPath, Get-ProjectColorSlot, ConvertFrom-HueSlot, Resolve-SessionColorSlot, Get-SessionOrdinal, Get-SessionDisplayName
+Export-ModuleMember -Function Get-NormalisedProjectPath, Get-ProjectColorSlot, ConvertFrom-HueSlot, Resolve-SessionColorSlot, Resolve-RingSlot, Get-SessionOrdinal, Get-SessionDisplayName

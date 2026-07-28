@@ -107,7 +107,15 @@ try {
         }
     } catch { }
 
-    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd -WindowPid $windowPid -Title $title
+    # The three wired hooks already carry activity -- no new signal needed.
+    # UserPromptSubmit ('clear') means a turn just started, Stop means it
+    # finished, Notification means it is waiting on the human.
+    $activity = switch ($Event) {
+        'notification' { 'attention' }
+        'clear'        { 'working' }
+        default        { 'idle' }
+    }
+    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd -WindowPid $windowPid -Title $title -Activity $activity
 
     $othersCount = 0
     switch ($Event) {

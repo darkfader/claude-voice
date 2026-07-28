@@ -205,6 +205,18 @@ function Get-PendingState {
         $state.known = @{}
     }
     foreach ($id in @($state.known.Keys)) {
+        # Defaults for entries written before these fields existed. Runtime
+        # state, so defaulted rather than migrated -- same reasoning as the
+        # `known` map itself.
+        if (-not $state.known[$id].ContainsKey('activity') -or -not $state.known[$id].activity) {
+            $state.known[$id].activity = 'idle'
+        }
+        if (-not $state.known[$id].ContainsKey('activitySince') -or -not $state.known[$id].activitySince) {
+            $state.known[$id].activitySince = $state.known[$id].lastSeen
+        }
+        if (-not $state.known[$id].ContainsKey('ringSlot') -or $null -eq $state.known[$id].ringSlot) {
+            $state.known[$id].ringSlot = Resolve-RingSlot -ProjectPath ([string]$state.known[$id].cwd)
+        }
         [datetime]$seen = [datetime]::MinValue
         if ([datetime]::TryParse($state.known[$id].lastSeen, [ref]$seen)) {
             if ($seen -lt $cutoff) { $state.known.Remove($id) | Out-Null }
@@ -326,7 +338,11 @@ function Register-KnownSession {
         # once, on first registration: it describes what the thread is about,
         # which does not change, and re-deriving it per hook would both cost a
         # transcript read every time and risk the name drifting mid-session.
-        [AllowEmptyString()][string]$Title = ''
+        [AllowEmptyString()][string]$Title = '',
+        # What the thread is doing, derived by the caller from which hook
+        # fired. Refreshed on every registration -- unlike title and ringSlot,
+        # this is the field that is meant to change.
+        [ValidateSet('idle','working','attention')][string]$Activity = 'idle'
     )
     Invoke-WithPendingStateLock {
         $state = Get-PendingState
@@ -340,6 +356,8 @@ function Register-KnownSession {
             if ($Title -and -not $state.known[$SessionId].title) {
                 $state.known[$SessionId].title = $Title
             }
+            $state.known[$SessionId].activity      = $Activity
+            $state.known[$SessionId].activitySince = $now
         } else {
             # Nudge against every OTHER known session's slot. Without this,
             # two sessions in the same folder hash to the same slot and are
@@ -352,16 +370,21 @@ function Register-KnownSession {
             $takenSlots = @($state.known.Values | Where-Object { $null -ne $_.slot } | ForEach-Object { $_.slot })
             $slot = Resolve-SessionColorSlot -ProjectPath $Cwd -TakenSlots $takenSlots
             $ords = @($state.known.Values | Where-Object { $_.project -eq $Project } | ForEach-Object { $_.ordinal })
+            $takenRing = @($state.known.Values | Where-Object { $null -ne $_.ringSlot } | ForEach-Object { $_.ringSlot })
+            $ringSlot  = Resolve-RingSlot -ProjectPath $Cwd -TakenSlots $takenRing
             $state.known[$SessionId] = @{
-                project   = $Project
-                cwd       = $Cwd
-                color     = ConvertFrom-HueSlot -Slot $slot
-                slot      = $slot
-                ordinal   = Get-SessionOrdinal -TakenOrdinals $ords
-                windowPid = $WindowPid
-                title     = $Title
-                firstSeen = $now
-                lastSeen  = $now
+                project       = $Project
+                cwd           = $Cwd
+                color         = ConvertFrom-HueSlot -Slot $slot
+                slot          = $slot
+                ordinal       = Get-SessionOrdinal -TakenOrdinals $ords
+                windowPid     = $WindowPid
+                title         = $Title
+                firstSeen     = $now
+                lastSeen      = $now
+                ringSlot      = $ringSlot
+                activity      = $Activity
+                activitySince = $now
             }
         }
         Save-PendingState -State $state

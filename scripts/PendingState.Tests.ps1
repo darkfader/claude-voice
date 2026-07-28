@@ -475,3 +475,56 @@ Describe 'known session colour distinctness' {
             Should -HaveCount 3
     }
 }
+
+Describe 'ring slot and activity on known sessions' {
+    BeforeEach {
+        $script:ringPath = Join-Path $TestDrive 'ring.json'
+        if (Test-Path $script:ringPath) { Remove-Item -Path $script:ringPath -Force }
+        Set-PendingStatePath -Path $script:ringPath
+        Set-PendingStateMutexName -Name "Global\ClaudeVoiceRingTest_$([guid]::NewGuid().ToString('N'))"
+        Set-PendingStateExpiryHours -Hours 4
+    }
+
+    It 'assigns a ringSlot and records activity' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'working'
+        $k = (Get-PendingState).known['s1']
+        $k.ringSlot      | Should -BeGreaterOrEqual 0
+        $k.ringSlot      | Should -BeLessOrEqual 11
+        $k.activity      | Should -Be 'working'
+        $k.activitySince | Should -Not -BeNullOrEmpty
+    }
+
+    It 'gives two same-folder sessions different ring slots' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'idle'
+        Register-KnownSession -SessionId 's2' -Project 'P' -Cwd 'C:/git/P' -Activity 'idle'
+        $k = (Get-PendingState).known
+        $k['s1'].ringSlot | Should -Not -Be $k['s2'].ringSlot
+    }
+
+    It 'keeps the same ringSlot when a session re-registers' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'working'
+        $first = (Get-PendingState).known['s1'].ringSlot
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'idle'
+        (Get-PendingState).known['s1'].ringSlot | Should -Be $first
+    }
+
+    It 'updates activity and its timestamp on re-registration' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'working'
+        $before = (Get-PendingState).known['s1'].activitySince
+        Start-Sleep -Milliseconds 20
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'attention'
+        $after = (Get-PendingState).known['s1']
+        $after.activity      | Should -Be 'attention'
+        $after.activitySince | Should -BeGreaterThan $before
+    }
+
+    It 'defaults activity to idle for a state file written before the field existed' {
+        $legacy = Join-Path $TestDrive 'legacy-ring.json'
+        Set-PendingStatePath -Path $legacy
+        '{"sessions":{},"known":{"old":{"project":"P","cwd":"C:/git/P","firstSeen":"2026-07-28T00:00:00.0000000+02:00","lastSeen":"2026-07-28T00:00:00.0000000+02:00"}},"cursor":null,"activeSession":null,"activeSince":null,"displayedSession":null}' |
+            Set-Content -Path $legacy
+        $k = (Get-PendingState).known['old']
+        $k.activity | Should -Be 'idle'
+        $k.ringSlot | Should -BeGreaterOrEqual 0
+    }
+}
