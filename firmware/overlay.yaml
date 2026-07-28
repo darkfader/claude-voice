@@ -160,11 +160,38 @@ text:
             size_t c2 = grp.find(',', c1 + 1);
             if (c2 == std::string::npos) continue;
 
-            int slot = atoi(grp.substr(0, c1).c_str());
+            // Slot: must be non-empty and all-digit before trusting atoi().
+            // atoi() silently returns 0 on non-numeric input, which would
+            // otherwise alias a garbled slot field onto LED 0.
+            std::string slot_str = grp.substr(0, c1);
+            if (slot_str.empty()) continue;
+            bool slot_digits_ok = true;
+            for (char c : slot_str) {
+              if (c < '0' || c > '9') { slot_digits_ok = false; break; }
+            }
+            if (!slot_digits_ok) continue;
+            int slot = atoi(slot_str.c_str());
             if (slot < 0 || slot > 11) continue;
+
+            // Colour: must be six hex digits before trusting strtoul().
+            // strtoul() silently returns 0 (black) at the first non-hex
+            // digit, which would otherwise render a corrupted colour as
+            // black instead of dropping the group.
             std::string hex = grp.substr(c1 + 1, c2 - c1 - 1);
             if (hex.size() != 6) continue;
+            bool hex_digits_ok = true;
+            for (char c : hex) {
+              bool is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+              if (!is_hex) { hex_digits_ok = false; break; }
+            }
+            if (!hex_digits_ok) continue;
+
+            // State: only these five codes mean anything to Task 7's
+            // renderer. Anything else -- including '\0' from a group that
+            // ends right after its second comma -- is dropped rather than
+            // stored, so a garbled state byte can't reach the render loop.
             char st = grp[c2 + 1];
+            if (st != 'i' && st != 'w' && st != 's' && st != 'a' && st != 'A') continue;
 
             uint32_t v = (uint32_t) strtoul(hex.c_str(), nullptr, 16);
             id(ring_slot)[n] = (uint8_t) slot;
@@ -175,6 +202,12 @@ text:
             if (st == 'A') {
               // Arrival: start the whole-ring flash and treat it as attention
               // from here on. Stored this way so no second message is needed.
+              //
+              // Deliberate: if a single message carries more than one 'A'
+              // group, every one of those threads still correctly becomes
+              // 'a', but ring_arrive_r/g/b gets overwritten each time --
+              // only one whole-ring flash can play at once, so the last
+              // arriving thread in the message wins the flash colour.
               id(ring_arrive_ms) = millis();
               id(ring_arrive_r) = id(ring_r)[n];
               id(ring_arrive_g) = id(ring_g)[n];
