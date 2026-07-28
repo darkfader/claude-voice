@@ -309,6 +309,7 @@ function Invoke-ButtonEvent {
         'dismiss' {
             Clear-PendingSession -SessionId $result.SessionId
             Set-RemainingLed -Connection $Connection
+            Publish-RingState -Connection $Connection
         }
         'none' {
             if ($result.Speak -and -not (Test-HaMuted -Connection $Connection)) {

@@ -210,9 +210,18 @@ try {
     # 'A' (arriving) is sent only for a genuinely new notification -- it is
     # what makes the firmware run its 2s whole-ring flash, and repeating it on
     # every hook would re-flash the ring constantly.
+    #
+    # $plan.Led.Flash alone is NOT enough: Get-NotifyPlan derives it from
+    # OtherPendingCount, which excludes the calling session -- so it is also
+    # true for a SECOND 'notification' hook on a session that is already the
+    # sole pending entry (e.g. an idle-waiting reminder after the original
+    # permission-prompt notification). Requiring the session was not already
+    # pending BEFORE this hook's mutation ($before, captured pre-switch above)
+    # closes that gap: only a session's first notification while pending is a
+    # genuine arrival.
     try {
         $ringState = Get-PendingState
-        $arriving = if ($Event -eq 'notification' -and $plan.Led.Flash) { $sessionId } else { $null }
+        $arriving = if ($Event -eq 'notification' -and $plan.Led.Flash -and -not $before.sessions.ContainsKey($sessionId)) { $sessionId } else { $null }
         $ringValue = Get-RingStateString -KnownSessions $ringState.known -Cursor $ringState.cursor -ArrivingSessionId $arriving
         Invoke-HaRingState -Connection $conn -Value $ringValue | Out-Null
     } catch {
