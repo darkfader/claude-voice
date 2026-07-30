@@ -77,6 +77,12 @@ script:
           then:
             - light.turn_on:
                 id: voice_assistant_leds
+                # Explicit 100%: without it the light keeps whatever master
+                # brightness the previous branch left behind (mute floors it
+                # at 0.2, not-ready sets 66%), and every per-LED value in the
+                # effect gets multiplied down by it. The effect does its own
+                # per-thread brightness, so the master must stay at full.
+                brightness: 100%
                 effect: "Claude Threads"
           else:
             - light.turn_off: voice_assistant_leds
@@ -85,3 +91,74 @@ script:
                   light.is_on: led_ring
                 then:
                   light.turn_on: led_ring
+
+# Mute must not blank the thread display. Mute is an AUDIO state -- the stock
+# body took the whole ring for its "Muted or Silent" indicator, which sits
+# ahead of the idle phase in control_leds' chain, so muting made every thread
+# disappear from the ring.
+#
+# Threads now keep the ring while muted. The stock indicator is still used
+# when there is nothing to show, so an idle muted device looks exactly as it
+# did before. Trade-off accepted deliberately: while threads are on the ring
+# there is no on-ring mute indicator, and mute is read from the physical
+# slider and switch.home_assistant_voice_0932b4_mute instead.
+#
+# NOTE: this entry joins the EXISTING `script:` list above. ESPHome's loader
+# raises "Duplicate key" on a second top-level `script:` in the same file --
+# unlike cross-file package merging, which concatenates.
+  - id: !extend control_leds_muted_or_silent
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ring_count) > 0;'
+          then:
+            - light.turn_on:
+                id: voice_assistant_leds
+                # Explicit 100%: without it the light keeps whatever master
+                # brightness the previous branch left behind (mute floors it
+                # at 0.2, not-ready sets 66%), and every per-LED value in the
+                # effect gets multiplied down by it. The effect does its own
+                # per-thread brightness, so the master must stay at full.
+                brightness: 100%
+                effect: "Claude Threads"
+          else:
+            - light.turn_on:
+                brightness: !lambda return max( id(led_ring).current_values.get_brightness() , 0.2f );
+                id: voice_assistant_leds
+                effect: "Muted or Silent"
+
+# Threads outrank "voice assistant not ready".
+#
+# Muting the mic is enough to put the assistant into the not_ready phase, and
+# that phase is checked BEFORE both mute and idle -- so a muted device showed
+# a permanent red "Twinkle" and the thread display never got a look in. A
+# muted mic is a deliberate user choice, not a fault worth blanking a working
+# display for.
+#
+# The stock red indicator still shows when there are no threads, so a device
+# that is genuinely not ready and has nothing to display still says so.
+# Deliberately NOT applied to control_leds_no_ha_connection_state: if the API
+# is down our thread data is stale, and hiding that would be lying.
+  - id: !extend control_leds_voice_assistant_not_ready_phase
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ring_count) > 0;'
+          then:
+            - light.turn_on:
+                id: voice_assistant_leds
+                # Explicit 100%: without it the light keeps whatever master
+                # brightness the previous branch left behind (mute floors it
+                # at 0.2, not-ready sets 66%), and every per-LED value in the
+                # effect gets multiplied down by it. The effect does its own
+                # per-thread brightness, so the master must stay at full.
+                brightness: 100%
+                effect: "Claude Threads"
+          else:
+            - light.turn_on:
+                brightness: 66%
+                red: 1
+                green: 0
+                blue: 0
+                id: voice_assistant_leds
+                effect: "Twinkle"

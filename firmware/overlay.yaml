@@ -98,6 +98,19 @@ script:
   # which merges after all packages. Same split the dial handlers needed.
   - id: !extend control_leds_voice_assistant_idle_phase
     then: !remove
+  # Mute is checked BEFORE the idle phase in control_leds' chain, so the stock
+  # "Muted or Silent" effect took the entire ring and the thread display
+  # vanished whenever the slider was muted. Mute is about AUDIO -- there is no
+  # reason it should blank a visual display. Replaced in custom-voice-pe.yaml.
+  - id: !extend control_leds_muted_or_silent
+    then: !remove
+  # "Not ready" outranks mute AND idle in control_leds' chain, and muting the
+  # microphone is itself enough to put the voice assistant into that phase --
+  # so a muted device sat in a permanent red "Twinkle" and the thread display
+  # could never appear. Not a boot transient: it lasted as long as mute was on.
+  # Replaced in custom-voice-pe.yaml.
+  - id: !extend control_leds_voice_assistant_not_ready_phase
+    then: !remove
 
 sensor:
   - id: !extend dial
@@ -225,6 +238,41 @@ text:
           }
           id(ring_count) = n;
           ESP_LOGD("claude_ring", "parsed %d threads from '%s'", n, s.c_str());
+          // Log the full slot -> LED mapping, so the ring can be diagnosed
+          // over USB (`esphome logs --device COM12`) without anyone having to
+          // stare at it and guess. This is the fastest way to answer "which
+          // physical LED is this thread on" and to check the offset.
+          for (int k = 0; k < n; k++) {
+            ESP_LOGD("claude_ring",
+                     "  thread %d: slot %u -> LED %u  state '%c'  rgb %02x%02x%02x",
+                     k, id(ring_slot)[k],
+                     (unsigned) ((id(ring_slot)[k] + id(ring_slot_offset)) % 12),
+                     id(ring_state)[k], id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]);
+          }
+          // Re-evaluate the LED priority chain ONLY when the branch it would
+          // pick has actually changed -- i.e. when ring_count crosses zero.
+          //
+          // The chain must be re-run at all because it does not otherwise
+          // notice new state: at boot ring_count is 0, a stock branch wins,
+          // and nothing re-ran it once the PC republished, so the stock
+          // indicator stayed up while threads waited to be drawn.
+          //
+          // But it must NOT be re-run on every parse. Each dial detent
+          // republishes, and running the chain calls light.turn_on with an
+          // effect, restarting an addressable effect several times a second
+          // while the audio pipeline is also churning out chimes. That is
+          // what preceded an exception/panic reboot during rapid dial use.
+          //
+          // Restarting is unnecessary anyway: the render lambda reads these
+          // globals every frame, so updated state is picked up without
+          // touching the light at all.
+          const bool was_empty = (id(ring_count_prev) <= 0);
+          const bool is_empty  = (n == 0);
+          id(ring_count_prev) = n;
+          if (was_empty != is_empty) {
+            ESP_LOGD("claude_ring", "ring_count crossed zero (%d) -- re-running control_leds", n);
+            id(control_leds).execute();
+          }
 
 # Globals for the per-thread ring parse (Task 6). Fixed-size, parsed once on
 # text.claude_ring_state's on_value -- not per render frame -- because the
@@ -232,9 +280,26 @@ text:
 # inference; re-parsing a string 66x/sec would be wasteful and potentially
 # harmful.
 globals:
+  # How far to rotate wire-format slot numbers before they become LED indices.
+  #
+  # voice_assistant_leds is a partition that already reorders the strip
+  # (physical 7..11 -> indices 0..4, physical 0..6 -> indices 5..11), so a
+  # thread's slot never lands where a human would point. Rather than guess and
+  # reflash repeatedly, this is a GLOBAL backed by a number entity, tunable
+  # live from Home Assistant until the ring matches -- see the `number:` block.
+  # Default 6 matches the stock Volume Display effect's it[(6+i)%12] origin.
+  - id: ring_slot_offset
+    type: uint8_t
+    restore_value: true
+    initial_value: '6'
   - id: ring_count
     type: int
     initial_value: '0'
+  # Previous ring_count, so on_value can tell whether the LED priority chain
+  # actually needs re-running -- see the on_value handler for why that matters.
+  - id: ring_count_prev
+    type: int
+    initial_value: '-1'
   - id: ring_slot
     type: uint8_t[12]
   - id: ring_r
@@ -282,7 +347,10 @@ light:
             // purely by elapsed time, so no second message is required.
             if (id(ring_arrive_ms) != 0) {
               uint32_t dt = now - id(ring_arrive_ms);
-              if (dt < 2000) {
+              // 500ms, not 2000. Long enough to catch the eye from across the
+              // room, short enough that it reads as a blink rather than the
+              // ring "going solid" and hiding every other thread's state.
+              if (dt < 500) {
                 Color c(id(ring_arrive_r), id(ring_arrive_g), id(ring_arrive_b));
                 for (uint8_t i = 0; i < 12; i++) it[i] = c;
                 return;
@@ -302,61 +370,88 @@ light:
             // LED 0. The stock "Volume Display" effect already compensates
             // for this with it[(6+i)%12], implying its own visual origin is
             // partition index 6 -- this effect starts from the same
-            // assumption. RING_SLOT_OFFSET is applied at exactly the two
+            // assumption. id(ring_slot_offset) is applied at exactly the two
             // places below where a thread's wire-format slot number becomes
             // an LED index (it[]/parked[]), so if a human looks at the ring
             // and finds it rotated, correcting it is a one-number change to
             // this constant, not a redesign of the render logic.
-            const uint8_t RING_SLOT_OFFSET = 6;
+            // (kept as a global, not a const, so it is tunable live from HA)
 
-            // Which LEDs are parked (anything not orbiting). Orbiters skip
-            // these so a moving thread never masks a stationary one.
-            bool parked[12] = {false};
+            // Pass 1: orbiters. They travel all twelve positions at a
+            // CONSTANT rate and pass BEHIND parked threads -- pass 2 repaints
+            // parked dots on top, so a stationary thread's identity is still
+            // never covered.
+            //
+            // The earlier version skipped parked LEDs outright, which kept
+            // the orbiter continuously visible but gave it an uneven angular
+            // speed: it lurched forward wherever threads were parked, and the
+            // busier the ring the worse it looked. Constant speed reads far
+            // more like orbiting; briefly disappearing behind a stationary dot
+            // is exactly what an orbit should look like anyway.
+            //
+            // 80ms per position = ~1s per revolution (was 125ms/1.5s).
+            const uint32_t step = (now / 80u);
+            int orbiter = 0;
             for (int k = 0; k < n; k++) {
-              if (id(ring_state)[k] != 'w') parked[(id(ring_slot)[k] + RING_SLOT_OFFSET) % 12] = true;
+              if (id(ring_state)[k] != 'w') continue;
+              // Stagger multiple orbiters so they do not fly in formation.
+              uint8_t i = (uint8_t) ((step + orbiter * 4u) % 12u);
+              // 200, not 140. Motion is what marks a thread as working, so
+              // this does not need to stay below the attention pulse's floor
+              // -- and at 140 it was simply too dark to see on the device.
+              it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * 200;
+              orbiter++;
             }
 
-            // Pass 1: orbiters, drawn first so parked dots always win a
-            // contested LED even if the skip logic is off by one.
-            int free_count = 0;
-            for (uint8_t i = 0; i < 12; i++) if (!parked[i]) free_count++;
-
-            if (free_count > 0) {
-              // 1.5s per revolution, advanced over the free LEDs only.
-              const uint32_t step = (now / 125u);   // 12 steps * 125ms = 1.5s
-              int orbiter = 0;
-              for (int k = 0; k < n; k++) {
-                if (id(ring_state)[k] != 'w') continue;
-                // Stagger multiple orbiters so they do not overlap constantly.
-                int idx = (int) ((step + orbiter * 4u) % (uint32_t) free_count);
-                int seen = 0;
-                for (uint8_t i = 0; i < 12; i++) {
-                  if (parked[i]) continue;
-                  if (seen == idx) {
-                    it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * 140;
-                    break;
-                  }
-                  seen++;
-                }
-                orbiter++;
-              }
-            }
-
-            // Pass 2: parked threads at their home LEDs, drawn after the
-            // orbiters (see above) so a stationary thread's identity
-            // survives even if the skip logic is off by one.
-            // Pulse for attention: 1Hz between 255 and 120. The floor is 120
-            // and not lower so a pulsing thread never momentarily reads as a
-            // working one (140) -- that distinction is the whole point.
+            // Pass 2: parked threads at their home LEDs, drawn AFTER the
+            // orbiters so a stationary thread's identity always wins its LED
+            // -- this is what makes "pass behind" safe.
+            // Pulse for attention: 1Hz between 255 and 90.
+            //
+            // The floor used to be 120, chosen so a pulsing thread could
+            // never momentarily read as dim as a working one. That was an
+            // over-constraint: MOTION already distinguishes working (it
+            // orbits) and PULSING already distinguishes attention, so
+            // brightness does not have to carry the distinction as well.
+            // Forcing it to made working too dark to see and the pulse too
+            // shallow to read as a pulse. A deeper swing is more obviously
+            // rhythmic, which is the actual signal.
             const float phase = (float) (now % 1000u) / 1000.0f;
-            const uint8_t pulse = (uint8_t) (120.0f + 135.0f * (0.5f + 0.5f * cosf(phase * 6.2831853f)));
+            const uint8_t pulse = (uint8_t) (90.0f + 165.0f * (0.5f + 0.5f * cosf(phase * 6.2831853f)));
 
             for (int k = 0; k < n; k++) {
               const char st = id(ring_state)[k];
               if (st == 'w') continue;
               uint8_t bright;
+              // Ordering: idle 70 < attention floor 90 < working 200 < 255.
+              // Idle was 25 and read as barely-there on the real device --
+              // an idle thread should still be plainly visible, just clearly
+              // the quietest thing on the ring.
               if (st == 'a')      bright = pulse;
               else if (st == 's') bright = 255;
-              else                bright = 25;
-              it[(id(ring_slot)[k] + RING_SLOT_OFFSET) % 12] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * bright;
+              else                bright = 70;
+              it[(id(ring_slot)[k] + id(ring_slot_offset)) % 12] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * bright;
             }
+
+# Live-tunable ring rotation. The partition already reorders the strip, so a
+# thread's slot number does not land where a human would point -- and the
+# right value can only be found by looking at the device. Exposing it as a
+# number entity means correcting it is a slider in Home Assistant, not an
+# edit-compile-flash cycle. restore_value on the global keeps it across
+# reboots once set.
+number:
+  - platform: template
+    name: "Ring Slot Offset"
+    id: ring_slot_offset_number
+    entity_category: config
+    icon: mdi:rotate-right
+    optimistic: true
+    min_value: 0
+    max_value: 11
+    step: 1
+    initial_value: 6
+    restore_value: false
+    set_action:
+      - lambda: |-
+          id(ring_slot_offset) = (uint8_t) x;
+          ESP_LOGD("claude_ring", "ring_slot_offset set to %u", (unsigned) id(ring_slot_offset));
