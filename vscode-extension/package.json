@@ -1,0 +1,104 @@
+{
+  "name": "claude-voice",
+  "displayName": "Claude Voice",
+  "description": "Switch Claude Code threads from a Home Assistant Voice dial, and manage the claude-voice bridge.",
+  "version": "0.1.0",
+  "publisher": "claude-voice",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeVoice.showStatus",
+        "title": "Claude Voice: Show Status",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.focusThread",
+        "title": "Claude Voice: Focus Thread...",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.installHooks",
+        "title": "Claude Voice: Install Global Hooks",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.uninstallHooks",
+        "title": "Claude Voice: Uninstall Global Hooks",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.startBridge",
+        "title": "Claude Voice: Start Bridge",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.stopBridge",
+        "title": "Claude Voice: Stop Bridge",
+        "category": "Claude Voice"
+      },
+      {
+        "command": "claudeVoice.showLog",
+        "title": "Claude Voice: Show Log",
+        "category": "Claude Voice"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Voice",
+      "properties": {
+        "claudeVoice.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Handle focus requests from the claude-voice bridge. Turn off to leave the dial's selection visible on the device without this window reacting to it."
+        },
+        "claudeVoice.stateDir": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to claude-voice/state. Leave empty to auto-detect from the open workspace folders."
+        },
+        "claudeVoice.matchStrategy": {
+          "type": "string",
+          "enum": [
+            "title",
+            "titleThenPath"
+          ],
+          "default": "title",
+          "description": "How a focus request is matched to an editor tab. 'title' matches the thread title against the tab label. 'titleThenPath' also tries the project folder name, which helps for threads too new to have been titled."
+        },
+        "claudeVoice.pollIntervalMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "description": "Fallback poll interval for the focus-request file. fs.watch misses events on Windows often enough that a poll is needed as a backstop."
+        },
+        "claudeVoice.requestMaxAgeMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 500,
+          "description": "Ignore focus requests older than this. Stops a stale file left behind by a crash from causing a surprise focus later."
+        },
+        "claudeVoice.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show bridge status in the status bar."
+        },
+        "claudeVoice.notifyOnFocusFailure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a notification when a focus request matches no tab in this window. Off by default: with several VS Code windows open, a miss is the normal case for every window that does not own the thread."
+        }
+      }
+    }
+  }
+}
