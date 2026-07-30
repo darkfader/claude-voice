@@ -26,7 +26,20 @@ function ConvertFrom-HueSlot {
     param([Parameter(Mandatory)][int]$Slot)
     # Full saturation and value, so sessions read as distinct hues rather
     # than as shades that are hard to tell apart on a small ring.
-    $hue = (360.0 / $script:SlotCount) * ($Slot % $script:SlotCount)
+    #
+    # The slot is SCATTERED around the wheel rather than mapped linearly.
+    # Linear mapping put consecutive slots 22.5 degrees apart, and
+    # Resolve-SessionColorSlot resolves a collision by taking the NEXT slot --
+    # so two threads in the same project reliably ended up on adjacent hues.
+    # Observed live: three sessions in one repo rendered as 223,255,0 /
+    # 128,255,0 / 32,255,0, three near-identical greens, which defeats the
+    # entire point of colour-as-identity.
+    #
+    # 5 is coprime with 16, so slot -> hue stays a bijection: every slot still
+    # gets its own hue, each slot's hue is still fixed forever, but successive
+    # slots now land 112.5 degrees apart instead of 22.5.
+    $scattered = ($Slot * 5) % $script:SlotCount
+    $hue = (360.0 / $script:SlotCount) * $scattered
     $x = 1.0 - [math]::Abs((($hue / 60.0) % 2.0) - 1.0)
     switch ([int][math]::Floor($hue / 60.0)) {
         0       { $r = 1.0; $g = $x;  $b = 0.0 }

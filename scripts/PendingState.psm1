@@ -11,6 +11,26 @@ $script:StatePath = Join-Path $PSScriptRoot '..\state\pending.json'
 $script:MutexName = 'Global\ClaudeVoicePendingState'
 $script:ExpiryHours = 4
 
+# `known` expires on a much longer clock than `sessions`, and mostly does not
+# rely on the clock at all.
+#
+# A pending session is "waiting on you right now", so a few hours is the right
+# staleness bound. A KNOWN session is "a thread you could switch to", and that
+# stays true for as long as the thread exists -- a session you left this
+# morning is still resumable this evening, and dropping it off the ring after
+# four hours was just wrong.
+#
+# The real signal is the transcript file: Claude Code writes one per session,
+# so its absence means the session was genuinely deleted, not merely quiet.
+# That is what actually retires an entry. The 24h clock is only a backstop for
+# entries whose transcript path was never recorded.
+$script:KnownExpiryHours = 24
+
+function Set-KnownExpiryHours {
+    param([Parameter(Mandatory)][double]$Hours)
+    $script:KnownExpiryHours = $Hours
+}
+
 function Set-PendingStatePath {
     param([Parameter(Mandatory)][string]$Path)
     # Deliberately NOT resolved to an absolute path here. $script:StatePath
@@ -217,9 +237,37 @@ function Get-PendingState {
         if (-not $state.known[$id].ContainsKey('ringSlot') -or $null -eq $state.known[$id].ringSlot) {
             $state.known[$id].ringSlot = Resolve-RingSlot -ProjectPath ([string]$state.known[$id].cwd)
         }
+        # A thread must ALWAYS have a visible colour. A missing, short or
+        # all-zero colour renders as black -- i.e. the thread silently
+        # vanishes from the ring while still occupying an LED, which looks
+        # exactly like a bug and is impossible to diagnose by eye. Recompute
+        # from the project path, which is what a fresh registration would
+        # have produced anyway.
+        $col = @($state.known[$id].color)
+        if ($col.Count -lt 3 -or (($col | Measure-Object -Sum).Sum -eq 0)) {
+            $state.known[$id].color = ConvertFrom-HueSlot -Slot (
+                Resolve-SessionColorSlot -ProjectPath ([string]$state.known[$id].cwd))
+        }
+        # Retire on DELETION, not on silence. Claude Code writes a transcript
+        # file per session, so its absence is the real "this thread is gone"
+        # signal -- far better than guessing from a clock. A session you left
+        # this morning is still resumable tonight and belongs on the ring; one
+        # whose transcript you deleted does not, however recently you used it.
+        $transcript = [string]$state.known[$id].transcriptPath
+        if ($transcript) {
+            if (-not (Test-Path -LiteralPath $transcript)) {
+                $state.known.Remove($id) | Out-Null
+            }
+            continue
+        }
+
+        # Backstop only, for entries registered before a transcript path was
+        # recorded (or by a hook payload that omitted it). 24h, not 4.
         [datetime]$seen = [datetime]::MinValue
         if ([datetime]::TryParse($state.known[$id].lastSeen, [ref]$seen)) {
-            if ($seen -lt $cutoff) { $state.known.Remove($id) | Out-Null }
+            if ($seen -lt (Get-Date).AddHours(-1 * $script:KnownExpiryHours)) {
+                $state.known.Remove($id) | Out-Null
+            }
         }
     }
 
@@ -342,7 +390,11 @@ function Register-KnownSession {
         # What the thread is doing, derived by the caller from which hook
         # fired. Refreshed on every registration -- unlike title and ringSlot,
         # this is the field that is meant to change.
-        [ValidateSet('idle','working','attention')][string]$Activity = 'idle'
+        [ValidateSet('idle','working','attention')][string]$Activity = 'idle',
+        # Path to Claude Code's transcript for this session. Refreshed every
+        # registration, because it is the liveness signal: once recorded, the
+        # entry is retired when this file disappears rather than on a timer.
+        [AllowEmptyString()][string]$TranscriptPath = ''
     )
     Invoke-WithPendingStateLock {
         $state = Get-PendingState
@@ -358,6 +410,7 @@ function Register-KnownSession {
             }
             $state.known[$SessionId].activity      = $Activity
             $state.known[$SessionId].activitySince = $now
+            if ($TranscriptPath) { $state.known[$SessionId].transcriptPath = $TranscriptPath }
         } else {
             # Nudge against every OTHER known session's slot. Without this,
             # two sessions in the same folder hash to the same slot and are
@@ -382,9 +435,10 @@ function Register-KnownSession {
                 title         = $Title
                 firstSeen     = $now
                 lastSeen      = $now
-                ringSlot      = $ringSlot
-                activity      = $Activity
-                activitySince = $now
+                ringSlot       = $ringSlot
+                activity       = $Activity
+                activitySince  = $now
+                transcriptPath = $TranscriptPath
             }
         }
         Save-PendingState -State $state
@@ -444,4 +498,4 @@ function Resolve-PendingSession {
     }
 }
 
-Export-ModuleMember -Function Set-PendingStatePath, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-KnownSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock
+Export-ModuleMember -Function Set-PendingStatePath, Set-KnownExpiryHours, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-KnownSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock

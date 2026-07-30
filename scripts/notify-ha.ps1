@@ -100,8 +100,9 @@ try {
     # capabilities"), read from the transcript the hook payload points at.
     # Far more use than "HomeAssistant 2" when the device says it aloud.
     $title = ''
+    $transcript = ''
     try {
-        $transcript = Get-PayloadValue -Payload $payload -Name 'transcript_path'
+        $transcript = [string](Get-PayloadValue -Payload $payload -Name 'transcript_path')
         if ($transcript) {
             $derived = Get-SessionTitle -TranscriptPath $transcript
             if ($derived) { $title = [string]$derived }
@@ -116,7 +117,7 @@ try {
         'clear'        { 'working' }
         default        { 'idle' }
     }
-    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd -WindowPid $windowPid -Title $title -Activity $activity
+    Register-KnownSession -SessionId $sessionId -Project $project -Cwd $cwd -WindowPid $windowPid -Title $title -Activity $activity -TranscriptPath $transcript
 
     $othersCount = 0
     switch ($Event) {

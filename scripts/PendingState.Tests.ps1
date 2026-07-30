@@ -28,6 +28,7 @@ Describe 'PendingState' {
         # 6/6, 6/6, then 4/6.
         Set-PendingStateMutexName -Name "Global\ClaudeVoicePendingStateTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
     }
 
     It 'returns empty state when no file exists yet' {
@@ -81,6 +82,7 @@ Describe 'PendingState' {
 
     It 'drops sessions older than the expiry window' {
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
         Set-PendingSession -SessionId 'old' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
         # Rewrite that entry's timestamp to 5 hours ago, bypassing the setter.
         $path = Join-Path $TestDrive 'pending.json'
@@ -92,6 +94,7 @@ Describe 'PendingState' {
 
     It 'keeps sessions inside the expiry window' {
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
         Set-PendingSession -SessionId 'fresh' -Project 'p' -Cwd 'c' -Message 'm' -Color @(1,2,3) -Slot 0 -Ordinal 1
         (Get-PendingState).sessions.ContainsKey('fresh') | Should -BeTrue
     }
@@ -374,6 +377,7 @@ Describe 'known session registry' {
         Set-PendingStatePath -Path $script:knownStatePath
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceKnownTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
     }
 
     It 'registers a session with base colour, ordinal 1, and matching first/last seen' {
@@ -404,11 +408,24 @@ Describe 'known session registry' {
         (Get-PendingState).known['s2'].ordinal | Should -Be 2
     }
 
-    It 'expires known entries older than the expiry window on read' {
+    It 'expires known entries with no transcript after the KNOWN backstop window' {
+        # `known` no longer follows the pending expiry clock -- it has its own,
+        # much longer one (24h), and that clock is only a backstop for entries
+        # with no transcript path recorded. Retirement normally happens when
+        # the transcript file disappears, not on a timer.
+        Register-KnownSession -SessionId 's1' -Project 'Old' -Cwd 'C:/git/Old'
+        Set-KnownExpiryHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
+    }
+
+    It 'does NOT expire a known entry on the pending clock' {
+        # Regression guard: a pending session going stale after 4h must not
+        # drag the known entry off the ring with it.
         Register-KnownSession -SessionId 's1' -Project 'Old' -Cwd 'C:/git/Old'
         Set-PendingStateExpiryHours -Hours 0.0001
         Start-Sleep -Milliseconds 500
-        (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeTrue
     }
 
     It 'defaults known to an empty map for a state file written before it existed' {
@@ -431,9 +448,46 @@ Describe 'known session registry' {
     It 'clears a cursor that names neither a pending nor a known session' {
         Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
         Set-PendingCursor -SessionId 's1'
-        Set-PendingStateExpiryHours -Hours 0.0001
+        Set-KnownExpiryHours -Hours 0.0001
         Start-Sleep -Milliseconds 500
         (Get-PendingState).cursor | Should -BeNullOrEmpty
+    }
+
+    It 'keeps a known session alive while its transcript exists, however old' {
+        # The whole point of the change: a thread you left this morning is
+        # still resumable tonight, so it stays on the ring. Age is irrelevant
+        # as long as the session still exists.
+        $t = Join-Path $TestDrive "alive-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $t
+        Set-KnownExpiryHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeTrue
+    }
+
+    It 'retires a known session once its transcript is deleted' {
+        # Deletion is the real "this thread is gone" signal, and it applies
+        # immediately -- no waiting out a clock.
+        $t = Join-Path $TestDrive "gone-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $t
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeTrue
+
+        Remove-Item -Path $t -Force
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
+    }
+
+    It 'records the transcript path on registration and refreshes it' {
+        $a = Join-Path $TestDrive "a-$([guid]::NewGuid().ToString('N')).jsonl"
+        $b = Join-Path $TestDrive "b-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $a
+        'x' | Set-Content -Path $b
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $a
+        (Get-PendingState).known['s1'].transcriptPath | Should -Be $a
+        # Unlike title and ringSlot, this must track the live value -- a
+        # stale path would retire a session that is still very much alive.
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $b
+        (Get-PendingState).known['s1'].transcriptPath | Should -Be $b
     }
 }
 
@@ -444,6 +498,7 @@ Describe 'known session colour distinctness' {
         Set-PendingStatePath -Path $script:distinctPath
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceDistinctTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
     }
 
     It 'gives two sessions in the SAME folder different colours' {
@@ -483,6 +538,7 @@ Describe 'ring slot and activity on known sessions' {
         Set-PendingStatePath -Path $script:ringPath
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceRingTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
+        Set-KnownExpiryHours -Hours 24
     }
 
     It 'assigns a ringSlot and records activity' {
