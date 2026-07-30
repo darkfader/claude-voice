@@ -5,6 +5,12 @@ function Get-KnownCycleTarget {
         [string]$Cursor,
         [Parameter(Mandatory)][ValidateSet('cw','ccw')][string]$Direction
     )
+    # EVERY thread is selectable, working ones included. An earlier version
+    # skipped threads mid-turn on the theory that you would not want to land
+    # on one -- but you often do: to watch it, or to interrupt it. Skipping
+    # also made the ring and the dial disagree about what existed, which is
+    # worse than an occasional unwanted stop.
+    #
     # Stable firstSeen order, NOT most-recently-used. MRU suits Alt-Tab, where
     # the list is invisible and a held modifier bounds the gesture. On a
     # physical dial it means the list reorders under your fingers, so the same
@@ -14,10 +20,25 @@ function Get-KnownCycleTarget {
 
     $idx = [array]::IndexOf($names, $Cursor)
     if ($idx -lt 0) {
-        # No cursor, or one naming a session that has since expired: enter the
-        # list from the end the rotation is heading away from, so the first
-        # detent lands on the oldest going forward and the newest going back.
-        if ($Direction -eq 'cw') { return $names[0] } else { return $names[-1] }
+        # No cursor, or one naming a session that has since expired.
+        #
+        # Enter at whatever LAST WANTED YOU, not at the end of the list. The
+        # overwhelmingly common reason to reach for the dial is that something
+        # just finished or asked a question -- so the first detent should land
+        # there rather than making you hunt for it.
+        #
+        # "Wanted you" means activity is `attention` (asking) or `idle`
+        # (finished a turn); a `working` thread has not asked for anything yet.
+        # Among those, the most recent activitySince wins. If every thread is
+        # working, fall back to the most recent of those, since there is no
+        # better claim on the human's attention.
+        $ranked = @($names | Where-Object { $KnownSessions[$_].activity -ne 'working' })
+        if ($ranked.Count -eq 0) { $ranked = $names }
+        $entry = @($ranked | Sort-Object -Descending {
+            [datetime]$t = [datetime]::MinValue
+            if ([datetime]::TryParse([string]$KnownSessions[$_].activitySince, [ref]$t)) { $t } else { [datetime]::MinValue }
+        })[0]
+        return $entry
     }
 
     $step = if ($Direction -eq 'cw') { 1 } else { -1 }

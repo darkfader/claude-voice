@@ -117,12 +117,13 @@ Describe 'Get-KnownCycleTarget' {
         Get-KnownCycleTarget -KnownSessions @{} -Cursor $null -Direction 'ccw' | Should -BeNullOrEmpty
     }
 
-    It 'starts at the oldest going clockwise with no cursor' {
-        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'cw' | Should -Be 'a'
-    }
-
-    It 'starts at the newest going anticlockwise with no cursor' {
-        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'ccw' | Should -Be 'c'
+    It 'enters at the same thread regardless of direction when nothing has asked' {
+        # Entry no longer depends on direction. It is decided by which thread
+        # last wanted the human (see the 'entry point' Describe below); with no
+        # activity data at all, every thread ranks equally and the stable sort
+        # leaves firstSeen order, so both directions enter at the oldest.
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'cw'  | Should -Be 'a'
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor $null -Direction 'ccw' | Should -Be 'a'
     }
 
     It 'advances in firstSeen order clockwise' {
@@ -144,13 +145,63 @@ Describe 'Get-KnownCycleTarget' {
     }
 
     It 'treats an unrecognised cursor as no cursor' {
+        # A cursor naming an expired session falls back to the entry rule,
+        # which is direction-independent.
         Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'gone' -Direction 'cw'  | Should -Be 'a'
-        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'gone' -Direction 'ccw' | Should -Be 'c'
+        Get-KnownCycleTarget -KnownSessions $script:known -Cursor 'gone' -Direction 'ccw' | Should -Be 'a'
     }
 
     It 'returns the only session regardless of direction' {
         $one = @{ solo = @{ firstSeen = '2026-07-27T10:00:00.0000000+02:00' } }
         Get-KnownCycleTarget -KnownSessions $one -Cursor 'solo' -Direction 'cw'  | Should -Be 'solo'
         Get-KnownCycleTarget -KnownSessions $one -Cursor 'solo' -Direction 'ccw' | Should -Be 'solo'
+    }
+}
+
+Describe 'Get-KnownCycleTarget entry point' {
+    BeforeAll {
+        # b finished most recently; c is still working; a finished a while ago.
+        $script:byAttention = @{
+            a = @{ firstSeen = '2026-07-29T10:00:00Z'; activity = 'idle';      activitySince = '2026-07-29T10:30:00Z' }
+            b = @{ firstSeen = '2026-07-29T10:01:00Z'; activity = 'idle';      activitySince = '2026-07-29T11:00:00Z' }
+            c = @{ firstSeen = '2026-07-29T10:02:00Z'; activity = 'working';   activitySince = '2026-07-29T11:59:00Z' }
+        }
+    }
+
+    It 'enters on whatever last wanted you, not the end of the list' {
+        # b finished most recently. c is newer but merely working -- it has not
+        # asked for anything, so it must not win the entry point.
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor $null -Direction 'cw'  | Should -Be 'b'
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor $null -Direction 'ccw' | Should -Be 'b'
+    }
+
+    It 'prefers an attention thread over an older finished one' {
+        $k = @{
+            fin = @{ firstSeen = '2026-07-29T10:00:00Z'; activity = 'idle';      activitySince = '2026-07-29T11:00:00Z' }
+            ask = @{ firstSeen = '2026-07-29T10:01:00Z'; activity = 'attention'; activitySince = '2026-07-29T11:30:00Z' }
+        }
+        Get-KnownCycleTarget -KnownSessions $k -Cursor $null -Direction 'cw' | Should -Be 'ask'
+    }
+
+    It 'falls back to the most recent working thread when nothing has asked' {
+        $k = @{
+            old = @{ firstSeen = '2026-07-29T10:00:00Z'; activity = 'working'; activitySince = '2026-07-29T10:10:00Z' }
+            new = @{ firstSeen = '2026-07-29T10:01:00Z'; activity = 'working'; activitySince = '2026-07-29T10:20:00Z' }
+        }
+        Get-KnownCycleTarget -KnownSessions $k -Cursor $null -Direction 'cw' | Should -Be 'new'
+    }
+
+    It 'still cycles in stable firstSeen order once a cursor exists' {
+        # The attention-based entry applies ONLY to entering the list. After
+        # that, order must stay predictable so the same turn lands the same way.
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor 'a' -Direction 'cw' | Should -Be 'b'
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor 'b' -Direction 'cw' | Should -Be 'c'
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor 'c' -Direction 'cw' | Should -Be 'a'
+    }
+
+    It 'can land on a working thread when cycling' {
+        # All threads are reachable now -- you may well want to watch or
+        # interrupt one mid-turn.
+        Get-KnownCycleTarget -KnownSessions $script:byAttention -Cursor 'b' -Direction 'cw' | Should -Be 'c'
     }
 }

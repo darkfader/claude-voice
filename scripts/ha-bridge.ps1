@@ -13,7 +13,12 @@ $logPath = Join-Path $PSScriptRoot '..\state\ha-bridge.log'
 # immediately, but focusing a window per detent would flick through three
 # windows on a three-notch turn. Focus instead fires once, 400ms after the
 # last detent -- the dial equivalent of releasing Alt.
-$script:DialSettleMs = 400
+# 150ms, down from 400. The settle window exists so a multi-step turn causes
+# one window switch rather than several -- but 400ms made selection feel
+# laggy, and now that rotation no longer speaks (see Invoke-DialSettleCheck)
+# there is nothing slow left to hide behind. Detents within a single gesture
+# arrive far closer together than this, so gestures still collapse correctly.
+$script:DialSettleMs = 150
 $script:DialSettleAt = [datetime]::MinValue
 $script:DialSettleSession = $null
 
@@ -141,6 +146,51 @@ function Get-SessionSpokenName {
 # so notify-ha.ps1 shares the exact same "hand the ring to the oldest
 # remaining pending session" logic instead of reimplementing it.
 
+function Request-EditorFocus {
+    <#
+    .SYNOPSIS
+    Ask the VS Code extension to focus a thread's tab.
+
+    .DESCRIPTION
+    Win32 focus can only address a WINDOW, and all of a user's Claude Code
+    threads routinely live as tabs inside ONE VS Code window -- measured live,
+    41 claude.exe processes under a single window. Focusing an already-focused
+    window is a no-op, which is why rotating the dial appeared to do nothing.
+
+    Only something running inside VS Code can switch tabs, so the bridge drops
+    a request here and the extension (claude-voice/vscode-extension) matches
+    the title against its tab labels.
+
+    A file rather than a socket: no port, no auth, no protocol version, and it
+    survives either side restarting. Every VS Code window reads it and only the
+    one owning that tab acts, so this is a broadcast, not a handshake.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        [AllowEmptyString()][string]$Title,
+        [AllowEmptyString()][string]$Project
+    )
+    try {
+        $dir = Join-Path $PSScriptRoot '..\state'
+        $req = @{
+            sessionId = $SessionId
+            title     = $Title
+            project   = $Project
+            # Milliseconds since epoch. The extension ignores anything older
+            # than a few seconds, so a file left behind by a crash cannot
+            # cause a surprise focus later.
+            stamp     = [int64]([datetimeoffset]::UtcNow.ToUnixTimeMilliseconds())
+        }
+        $tmp = Join-Path $dir "focus-request.$([guid]::NewGuid().ToString('N')).tmp"
+        $req | ConvertTo-Json -Compress | Set-Content -Path $tmp
+        # Atomic swap, same reasoning as pending.json: the extension polls this
+        # file and must never read a half-written one.
+        [System.IO.File]::Move($tmp, (Join-Path $dir 'focus-request.json'), $true)
+    } catch {
+        Write-BridgeLog "focus request write failed (continuing): $_"
+    }
+}
+
 function Publish-RingState {
     <#
     .SYNOPSIS
@@ -218,21 +268,51 @@ function Invoke-DialSettleCheck {
     $entry = $state.known[$sessionId]
     $name  = Get-SessionSpokenName -Entry $entry
 
+    # Ask the VS Code extension first: it is the only thing that can switch
+    # between threads sharing one window, which is the normal case.
+    Request-EditorFocus -SessionId $sessionId -Title ([string]$entry.title) -Project ([string]$entry.project)
+
+    # Then the Win32 path, which still earns its place for threads in a
+    # DIFFERENT window (or a plain terminal) -- the extension can only act
+    # within its own window.
+    #
     # -KeepPending: rotation is navigation. Browsing to a session must not
     # dismiss the light telling you it still wants something.
     $windowPid = if ($entry.windowPid) { [int]$entry.windowPid } else { 0 }
     & (Join-Path $PSScriptRoot 'confirm-session.ps1') -SessionId $sessionId -Project $entry.project -WindowPid $windowPid -FocusOnly -KeepPending
     if ($LASTEXITCODE -ne 0) {
-        Write-BridgeLog "focus failed for $name (no matching window)"
-        if (-not (Test-HaMuted -Connection $Connection)) {
-            Invoke-HaAnnounce -Connection $Connection -Text "Couldn't find the $name session" | Out-Null
-        }
+        # SILENT, and only logged at info -- this is not a failure any more.
+        #
+        # Request-EditorFocus above has almost certainly already succeeded: the
+        # VS Code extension is the primary path, and it handles the normal case
+        # of threads sharing one window. Win32 only covers threads in a
+        # DIFFERENT window, so it failing here usually means "the extension
+        # dealt with it", not "nothing happened".
+        #
+        # It used to announce "Couldn't find the <title> session" aloud, which
+        # was wrong twice over: it cried failure over a success, and going
+        # through assist_satellite.announce drove the device into its replying
+        # phase, whose animation outranks the thread display and wiped the ring.
+        Write-BridgeLog -Level info -Message "win32 focus miss for $name (extension path likely handled it)"
         return
     }
 
     Write-BridgeLog -Level info -Message "focus -> $name"
-    if (Test-HaMuted -Connection $Connection) { Invoke-HaChime -Connection $Connection | Out-Null }
-    else { Invoke-HaAnnounce -Connection $Connection -Text $name | Out-Null }
+    # SILENT -- no chime, no speech.
+    #
+    # Speech went first: assist_satellite.announce drives the device into its
+    # replying phase, whose animation outranks the thread display and wiped it
+    # on every rotation.
+    #
+    # The chime went too. Each one spins up the whole audio pipeline
+    # (speaker_mixer, ring buffers, decoder), and rotating the dial fires them
+    # back to back -- that churn is visible in the serial log immediately
+    # before an exception/panic reboot during rapid dial use. It is also
+    # simply unnecessary now: the ring shows the selection as the bright
+    # steady dot, and the window actually comes to the front.
+    #
+    # Deliberate presses (activate / long-press focus) still chime -- those
+    # are one-shot and cannot machine-gun the audio path.
 }
 
 function Invoke-ButtonEvent {
@@ -261,9 +341,16 @@ function Invoke-ButtonEvent {
             & (Join-Path $PSScriptRoot 'confirm-session.ps1') -SessionId $result.SessionId -Project $entry.project -WindowPid $activatePid -FocusOnly -KeepPending
             if ($LASTEXITCODE -ne 0) {
                 Write-BridgeLog "activate failed for $name (no matching window)"
-                if (-not (Test-HaMuted -Connection $Connection)) {
-                    Invoke-HaAnnounce -Connection $Connection -Text "Couldn't find the $name session" | Out-Null
-                }
+                # Tone, not speech. A double-press is deliberate, so a failure
+                # deserves feedback -- but assist_satellite.announce drives the
+                # device into its replying phase, whose LED animation outranks
+                # the thread display and wipes the ring. play_media does not
+                # touch the voice assistant at all.
+                #
+                # Deliberately NOT gated on mute: mute silences the ASSISTANT's
+                # voice, and this is a UI sound, the same as the chime on the
+                # success path just below.
+                Invoke-HaErrorSound -Connection $Connection | Out-Null
             } else {
                 Write-BridgeLog -Level info -Message "activate -> $name"
                 Invoke-HaChime -Connection $Connection | Out-Null
@@ -297,7 +384,8 @@ function Invoke-ButtonEvent {
             # (e.g. the optional Stream Controller page), not from the device.
             & (Join-Path $PSScriptRoot 'confirm-session.ps1') -SessionId $result.SessionId -Project $entry.project -WindowPid $focusPid -FocusOnly
             if ($LASTEXITCODE -ne 0) {
-                Invoke-HaAnnounce -Connection $Connection -Text "Couldn't find the $(Get-SessionSpokenName -Entry $entry) session" | Out-Null
+                # Tone, not speech -- see the activate branch above.
+                Invoke-HaErrorSound -Connection $Connection | Out-Null
                 Set-DisplayedSession -SessionId $result.SessionId
                 Invoke-HaLed -Connection $Connection -Rgb $entry.color -Brightness 255 | Out-Null
             } else {
@@ -369,6 +457,15 @@ while ($true) {
         Write-BridgeLog -Level info -Message "connected to $($conn.Url)"
         $backoffSec = 5
 
+        # Republish the ring on every connect. The device does NOT persist
+        # ring state across a reboot -- claude_ring_state has initial_value ""
+        # -- and the bridge otherwise only publishes when something happens.
+        # So after a firmware flash, a power cycle, or an HA restart, the ring
+        # sat dark until a hook happened to fire, which could be hours. This
+        # also covers the bridge's own restart, since the state file is the
+        # real system of record and survives both.
+        Publish-RingState -Connection $conn
+
         while ($stream.Socket.State -eq 'Open') {
             $msg = & $stream.Receive
             # No `continue` here any more: an empty 250ms slice ($msg is $null,
@@ -384,6 +481,31 @@ while ($true) {
                         Invoke-DialRotationEvent -Connection $conn -Direction $direction
                     } catch {
                         Write-BridgeLog "Invoke-DialRotationEvent failed (continuing): $_"
+                    }
+                }
+            } elseif ($null -ne $data -and $data.entity_id -eq (Get-HaRingStateEntityId)) {
+                # Self-heal after a device reboot.
+                #
+                # claude_ring_state has initial_value "", so a firmware flash
+                # or power cycle wipes it and the ring goes dark. Republishing
+                # on connect is not enough: if the device reboots while the
+                # bridge is already connected, the bridge never learns. Here
+                # we see the entity itself go empty/unknown and immediately
+                # re-send, which covers every ordering.
+                #
+                # Guarded on having something to send, so this cannot spin:
+                # publishing '' when there are no threads would echo back as
+                # another empty state_changed and loop forever.
+                $ringNow = [string]$data.new_state.state
+                if ([string]::IsNullOrWhiteSpace($ringNow) -or $ringNow -eq 'unknown' -or $ringNow -eq 'unavailable') {
+                    try {
+                        $healState = Get-PendingState
+                        if ($healState.known.Count -gt 0) {
+                            Write-BridgeLog -Level info -Message "ring state was '$ringNow' -- republishing"
+                            Publish-RingState -Connection $conn
+                        }
+                    } catch {
+                        Write-BridgeLog "ring self-heal failed (continuing): $_"
                     }
                 }
             } elseif ($null -ne $data -and $data.entity_id -eq 'event.home_assistant_voice_0932b4_button_press') {
