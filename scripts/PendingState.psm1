@@ -31,6 +31,31 @@ function Set-KnownExpiryHours {
     $script:KnownExpiryHours = $Hours
 }
 
+# Idle-fade: a known session that hasn't been touched in this long loses its
+# ring slot and colour (both set to $null) but stays in `known` -- it still
+# shows in the VS Code threads list, just with no ring presence. This is what
+# actually frees slots for other sessions; a thread you're still "in" keeps
+# its slot indefinitely (see KnownExpiryHours/transcript-deletion above),
+# but with only 12 physical ring positions, a thread nobody has touched in an
+# hour should give its slot back.
+$script:KnownIdleFadeHours = 1
+
+function Set-KnownIdleFadeHours {
+    param([Parameter(Mandatory)][double]$Hours)
+    $script:KnownIdleFadeHours = $Hours
+}
+
+# Hard expiry: unlike KnownExpiryHours (a backstop for entries with no
+# transcript path, effectively never fires otherwise), this ALWAYS removes
+# the entry once idle this long, transcript or no. A thread untouched for two
+# days is not "still resumable tonight" territory any more.
+$script:KnownHardExpiryHours = 48
+
+function Set-KnownHardExpiryHours {
+    param([Parameter(Mandatory)][double]$Hours)
+    $script:KnownHardExpiryHours = $Hours
+}
+
 function Set-PendingStatePath {
     param([Parameter(Mandatory)][string]$Path)
     # Deliberately NOT resolved to an absolute path here. $script:StatePath
@@ -498,4 +523,4 @@ function Resolve-PendingSession {
     }
 }
 
-Export-ModuleMember -Function Set-PendingStatePath, Set-KnownExpiryHours, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-KnownSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock
+Export-ModuleMember -Function Set-PendingStatePath, Set-KnownExpiryHours, Set-KnownIdleFadeHours, Set-KnownHardExpiryHours, Set-PendingStateMutexName, Set-PendingStateExpiryHours, Get-PendingState, Set-PendingSession, Clear-PendingSession, Set-PendingCursor, Set-ActiveSession, Clear-ActiveSession, Set-DisplayedSession, Clear-DisplayedSession, Register-KnownSession, Register-PendingNotification, Resolve-PendingSession, Invoke-WithPendingStateLock

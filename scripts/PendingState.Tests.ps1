@@ -419,6 +419,14 @@ Describe 'known session registry' {
         (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
     }
 
+    It 'allows overriding the idle-fade and hard-expiry windows' {
+        # No behavioural assertion here -- just proves the setters exist and
+        # don't throw. Behaviour is covered by the fade/expiry tests below,
+        # which rely on these setters to shrink the windows to milliseconds.
+        { Set-KnownIdleFadeHours -Hours 0.0001 } | Should -Not -Throw
+        { Set-KnownHardExpiryHours -Hours 0.0002 } | Should -Not -Throw
+    }
+
     It 'does NOT expire a known entry on the pending clock' {
         # Regression guard: a pending session going stale after 4h must not
         # drag the known entry off the ring with it.
