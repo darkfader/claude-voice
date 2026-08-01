@@ -624,7 +624,11 @@ Describe 'ring slot and activity on known sessions' {
         # entry before the defaulting code -- or the assertions -- ever ran,
         # making the test fail spuriously (and permanently) once real time
         # caught up to the literal. Found in review.
-        $recentIso = (Get-Date).AddHours(-1).ToString('o')
+        # Kept at 30 minutes (rather than 1h+) so this stays inside the
+        # KnownIdleFadeHours default too -- this test is about the legacy
+        # activity default, not idle-fade, so it shouldn't be coupled to
+        # that cutoff.
+        $recentIso = (Get-Date).AddMinutes(-30).ToString('o')
         ('{{"sessions":{{}},"known":{{"old":{{"project":"P","cwd":"C:/git/P","firstSeen":"{0}","lastSeen":"{0}"}}}},"cursor":null,"activeSession":null,"activeSince":null,"displayedSession":null}}' -f $recentIso) |
             Set-Content -Path $legacy
         $k = (Get-PendingState).known['old']
