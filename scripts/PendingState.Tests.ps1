@@ -582,6 +582,58 @@ Describe 'known session registry' {
         $after.ringSlot | Should -Not -BeNullOrEmpty
         $after.color    | Should -Not -BeNullOrEmpty
     }
+
+    It 'keeps slot and colour in sync after a fade -- both null or colour matches ConvertFrom-HueSlot of slot' {
+        # Regression guard for the final-review cross-task bug: Get-PendingState
+        # used to default ringSlot and recompute colour BEFORE checking whether
+        # the entry was still within the idle-fade window. On a read that landed
+        # while still faded, those defaulting blocks would reassign fresh
+        # (collision-unaware) ringSlot/colour values that the fade check then
+        # re-nulled a few lines later -- a wasteful no-op in the common case,
+        # but `slot` has no equivalent defaulting block of its own, so a
+        # differently-timed read could leave colour/ringSlot non-null while
+        # slot stayed null, desyncing the two fields that collision avoidance
+        # (which keys off `.slot`) depends on being consistent. With the fix,
+        # the ringSlot-default and colour-recompute blocks are gated on the
+        # same "is this entry currently faded" check the fade block itself
+        # uses, so a still-faded entry can never have colour/ringSlot
+        # repopulated while slot remains null.
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        Set-KnownIdleFadeHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        $faded = (Get-PendingState).known['s1']
+        $faded.slot     | Should -BeNullOrEmpty
+        $faded.ringSlot | Should -BeNullOrEmpty
+        $faded.color    | Should -BeNullOrEmpty
+
+        # Read again -- with the bug, this second read would have repopulated
+        # ringSlot/color (via the pre-existing defaulting blocks) while leaving
+        # slot null, desyncing the two. With the fix, they must stay consistently
+        # null together since the entry is still within the fade window.
+        $stillFaded = (Get-PendingState).known['s1']
+        $stillFaded.slot     | Should -BeNullOrEmpty
+        $stillFaded.ringSlot | Should -BeNullOrEmpty
+        $stillFaded.color    | Should -BeNullOrEmpty
+    }
+
+    It 'still resolves ringSlot and colour normally for a legitimately-missing (not faded) entry' {
+        # Strengthens the gate above by proving it is scoped correctly: the
+        # ringSlot-default / colour-recompute blocks must still fire for an
+        # entry that is NOT currently faded but genuinely has a missing/
+        # invalid ringSlot or colour (e.g. a legacy entry written before those
+        # fields existed). Simulate that by registering normally (not faded)
+        # then blanking ringSlot/color directly, bypassing the fade path.
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        $raw = Get-Content -Path $script:knownStatePath -Raw | ConvertFrom-Json -AsHashtable
+        $raw.known['s1'].ringSlot = $null
+        $raw.known['s1'].color    = $null
+        $raw | ConvertTo-Json -Depth 5 | Set-Content -Path $script:knownStatePath
+
+        $after = (Get-PendingState).known['s1']
+        $after.ringSlot | Should -Not -BeNullOrEmpty
+        $after.color    | Should -Not -BeNullOrEmpty
+        ($after.color -join ',') | Should -Be ((ConvertFrom-HueSlot -Slot $after.slot) -join ',')
+    }
 }
 
 Describe 'known session colour distinctness' {

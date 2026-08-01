@@ -259,23 +259,11 @@ function Get-PendingState {
         if (-not $state.known[$id].ContainsKey('activitySince') -or -not $state.known[$id].activitySince) {
             $state.known[$id].activitySince = $state.known[$id].lastSeen
         }
-        if (-not $state.known[$id].ContainsKey('ringSlot') -or $null -eq $state.known[$id].ringSlot) {
-            $state.known[$id].ringSlot = Resolve-RingSlot -ProjectPath ([string]$state.known[$id].cwd)
-        }
-        # A thread must ALWAYS have a visible colour. A missing, short or
-        # all-zero colour renders as black -- i.e. the thread silently
-        # vanishes from the ring while still occupying an LED, which looks
-        # exactly like a bug and is impossible to diagnose by eye. Recompute
-        # from the project path, which is what a fresh registration would
-        # have produced anyway.
-        $col = @($state.known[$id].color)
-        if ($col.Count -lt 3 -or (($col | Measure-Object -Sum).Sum -eq 0)) {
-            $state.known[$id].color = ConvertFrom-HueSlot -Slot (
-                Resolve-SessionColorSlot -ProjectPath ([string]$state.known[$id].cwd))
-        }
-        # Idle basis for both new rules below: time since the session's last
-        # hook activity, regardless of activity state or transcript
-        # existence.
+        # Idle basis for everything below: time since the session's last hook
+        # activity, regardless of activity state or transcript existence.
+        # Parsed up front -- BEFORE the ringSlot default / colour recompute
+        # blocks that follow -- because both of those must be gated on
+        # whether the entry is currently idle-faded (see $isFaded below).
         [datetime]$lastSeenAt = [datetime]::MinValue
         [void][datetime]::TryParse([string]$state.known[$id].lastSeen, [ref]$lastSeenAt)
 
@@ -290,14 +278,63 @@ function Get-PendingState {
             continue
         }
 
-        # Idle-fade: 1h idle releases the ring slot and colour (both set to
-        # $null) so Resolve-RingSlot/Resolve-SessionColorSlot can hand them
-        # to another session, but the entry itself stays in `known` -- it
-        # still shows in the VS Code threads list. Only touches fields that
-        # are not already $null, so this is a no-op on every read after the
-        # first fade.
-        if ($lastSeenAt -ne [datetime]::MinValue -and
-            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownIdleFadeHours) -and
+        # Computed ONCE and shared by both (a) the gate that skips the
+        # ringSlot/colour defaulting below, and (b) the idle-fade block
+        # itself further down. This is what makes the idle-fade authoritative:
+        # previously the ringSlot default and colour recompute blocks ran
+        # unconditionally BEFORE the fade check, so a still-faded entry
+        # (ringSlot/color/slot all $null from a prior fade) would have those
+        # fields reassigned fresh non-null values here, only to be re-nulled
+        # by the fade block a few lines later -- two wasted, collision-unaware
+        # resolutions on every single read. Worse, `slot` has NO separate
+        # defaulting block of its own (unlike ringSlot/color): if a fade
+        # boundary was crossed by lastSeen refreshing between two reads, a
+        # stray pre-fade-check default could leave color/ringSlot freshly
+        # non-null while slot stayed null (still cleared from the earlier
+        # fade), desyncing the two in a way collision avoidance -- which keys
+        # off `.slot`, not `.color` -- cannot see. Gating both blocks on the
+        # same $isFaded boolean used by the fade block below closes that:
+        # neither block runs at all while the entry is within the fade
+        # window, so nothing repopulates ringSlot/color ahead of slot.
+        $isFaded = $lastSeenAt -ne [datetime]::MinValue -and
+            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownIdleFadeHours)
+
+        if (-not $isFaded) {
+            if (-not $state.known[$id].ContainsKey('ringSlot') -or $null -eq $state.known[$id].ringSlot) {
+                $state.known[$id].ringSlot = Resolve-RingSlot -ProjectPath ([string]$state.known[$id].cwd)
+            }
+            # A thread must ALWAYS have a visible colour. A missing, short or
+            # all-zero colour renders as black -- i.e. the thread silently
+            # vanishes from the ring while still occupying an LED, which
+            # looks exactly like a bug and is impossible to diagnose by eye.
+            # Recompute from the project path, which is what a fresh
+            # registration would have produced anyway.
+            $col = @($state.known[$id].color)
+            if ($col.Count -lt 3 -or (($col | Measure-Object -Sum).Sum -eq 0)) {
+                $state.known[$id].color = ConvertFrom-HueSlot -Slot (
+                    Resolve-SessionColorSlot -ProjectPath ([string]$state.known[$id].cwd))
+            }
+        }
+
+        # Idle-fade: 1h idle releases the ring slot, hue slot, and colour
+        # (all three set to $null) so Resolve-RingSlot/Resolve-SessionColorSlot
+        # can hand them to another session, but the entry itself stays in
+        # `known` -- it still shows in the VS Code threads list. Because the
+        # ringSlot-default and colour-recompute blocks above are now gated on
+        # `-not $isFaded`, they never re-populate these fields while still
+        # within the fade window, so this really is a no-op on every read
+        # after the first fade (previously that claim was only true for the
+        # NET effect after both the defaults and this block ran; `slot` had
+        # no defaulting block to be a no-op against in the first place, which
+        # was the actual desync risk this reordering closes).
+        #
+        # Note this fade is a READ-TIME PROJECTION ONLY: Get-PendingState
+        # takes no lock and never calls Save-PendingState itself (see the
+        # function-level comment above), so this mutation lives purely in the
+        # returned in-memory hashtable until some OTHER code path (e.g.
+        # Register-KnownSession) separately persists it. A caller that reads
+        # state and does nothing with it leaves the on-disk fade untouched.
+        if ($isFaded -and
             ($null -ne $state.known[$id].ringSlot -or $null -ne $state.known[$id].slot -or
              $null -ne $state.known[$id].color)) {
             $state.known[$id].ringSlot = $null
