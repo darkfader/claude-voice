@@ -465,10 +465,26 @@ Describe 'known session registry' {
         (Get-PendingState).cursor | Should -BeNullOrEmpty
     }
 
-    It 'keeps a known session alive while its transcript exists, however old' {
-        # The whole point of the change: a thread you left this morning is
-        # still resumable tonight, so it stays on the ring. Age is irrelevant
-        # as long as the session still exists.
+    It 'removes a known session at the hard-expiry window even if its transcript still exists' {
+        $t = Join-Path $TestDrive "hardexpire-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $t
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeTrue
+
+        Set-KnownHardExpiryHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeFalse
+        # The transcript file itself is untouched -- only the known-session
+        # entry is removed, not the underlying transcript.
+        Test-Path -LiteralPath $t | Should -BeTrue
+    }
+
+    It 'keeps a known session alive while its transcript exists, within the hard-expiry window' {
+        # A thread you left this morning is still resumable tonight, so it
+        # stays on the ring even if KnownExpiryHours (the transcript-less
+        # backstop) would have expired it -- but only up to the 48h hard
+        # expiry, which is a separate, unconditional cutoff (see the test
+        # above).
         $t = Join-Path $TestDrive "alive-$([guid]::NewGuid().ToString('N')).jsonl"
         'x' | Set-Content -Path $t
         Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $t
