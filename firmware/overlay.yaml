@@ -377,35 +377,9 @@ light:
             // this constant, not a redesign of the render logic.
             // (kept as a global, not a const, so it is tunable live from HA)
 
-            // Pass 1: orbiters. They travel all twelve positions at a
-            // CONSTANT rate and pass BEHIND parked threads -- pass 2 repaints
-            // parked dots on top, so a stationary thread's identity is still
-            // never covered.
-            //
-            // The earlier version skipped parked LEDs outright, which kept
-            // the orbiter continuously visible but gave it an uneven angular
-            // speed: it lurched forward wherever threads were parked, and the
-            // busier the ring the worse it looked. Constant speed reads far
-            // more like orbiting; briefly disappearing behind a stationary dot
-            // is exactly what an orbit should look like anyway.
-            //
-            // 80ms per position = ~1s per revolution (was 125ms/1.5s).
-            const uint32_t step = (now / 80u);
-            int orbiter = 0;
-            for (int k = 0; k < n; k++) {
-              if (id(ring_state)[k] != 'w') continue;
-              // Stagger multiple orbiters so they do not fly in formation.
-              uint8_t i = (uint8_t) ((step + orbiter * 4u) % 12u);
-              // 200, not 140. Motion is what marks a thread as working, so
-              // this does not need to stay below the attention pulse's floor
-              // -- and at 140 it was simply too dark to see on the device.
-              it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * 200;
-              orbiter++;
-            }
-
-            // Pass 2: parked threads at their home LEDs, drawn AFTER the
-            // orbiters so a stationary thread's identity always wins its LED
-            // -- this is what makes "pass behind" safe.
+            // Pass 1 (was pass 2): parked threads, drawn FIRST now. Same
+            // brightness rules as before -- this part is unchanged, only its
+            // position in the render order moved.
             // Pulse for attention: 1Hz between 255 and 90.
             //
             // The floor used to be 120, chosen so a pulsing thread could
@@ -419,6 +393,12 @@ light:
             const float phase = (float) (now % 1000u) / 1000.0f;
             const uint8_t pulse = (uint8_t) (90.0f + 165.0f * (0.5f + 0.5f * cosf(phase * 6.2831853f)));
 
+            // Track which physical LED slots end up occupied by a parked
+            // thread, so pass 2 (orbiters) can tell "empty ring" from
+            // "orbiting over someone" and dim accordingly.
+            bool occupied[12] = { false, false, false, false, false, false,
+                                   false, false, false, false, false, false };
+
             for (int k = 0; k < n; k++) {
               const char st = id(ring_state)[k];
               if (st == 'w') continue;
@@ -430,7 +410,36 @@ light:
               if (st == 'a')      bright = pulse;
               else if (st == 's') bright = 255;
               else                bright = 70;
-              it[(id(ring_slot)[k] + id(ring_slot_offset)) % 12] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * bright;
+              uint8_t slotIdx = (id(ring_slot)[k] + id(ring_slot_offset)) % 12;
+              it[slotIdx] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * bright;
+              occupied[slotIdx] = true;
+            }
+
+            // Pass 2 (was pass 1): orbiters, drawn AFTER parked threads now,
+            // so an orbiter always wins its current pixel instead of being
+            // covered by a parked thread's steady dot. Priority signal: an
+            // actively working thread should never be invisible just
+            // because it happens to be passing behind someone else's slot.
+            //
+            // The earlier version drew orbiters first and let parked threads
+            // repaint on top, which kept a stationary thread's identity safe
+            // but could fully hide a working thread's orbiting dot behind a
+            // parked one -- exactly backwards from what should have priority.
+            //
+            // 80ms per position = ~1s per revolution.
+            const uint32_t step = (now / 80u);
+            int orbiter = 0;
+            for (int k = 0; k < n; k++) {
+              if (id(ring_state)[k] != 'w') continue;
+              // Stagger multiple orbiters so they do not fly in formation.
+              uint8_t i = (uint8_t) ((step + orbiter * 4u) % 12u);
+              // Full 200 over an empty slot; half (100) when passing over a
+              // slot a parked thread already occupies -- still always
+              // visible, just visibly dimmer to signal something is
+              // underneath, rather than fully hidden as before.
+              uint8_t orbiterBright = occupied[i] ? 100 : 200;
+              it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * orbiterBright;
+              orbiter++;
             }
 
 # Live-tunable ring rotation. The partition already reorders the strip, so a
