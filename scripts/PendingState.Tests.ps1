@@ -406,6 +406,47 @@ Describe 'known session registry' {
         $after.ordinal   | Should -Be $before.ordinal
     }
 
+    It 'reassigns a fresh ringSlot/slot/colour when a faded session re-registers' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        # 0.001h (3.6s) rather than the even tighter 0.0001h used elsewhere in
+        # this file: this test does extra Get-PendingState/Register-KnownSession
+        # calls AFTER the sleep, on the way to its final assertion, and each of
+        # those costs real wall-clock time under Pester. A 0.36s fade window
+        # left no margin -- the test's own follow-up reads could themselves
+        # cross back over the threshold and re-fade the reactivated session,
+        # observed empirically as ~50% flakiness. 3.6s comfortably outlasts
+        # that overhead while still keeping the test fast.
+        Set-KnownIdleFadeHours -Hours 0.001
+        Start-Sleep -Milliseconds 4000
+        $faded = (Get-PendingState).known['s1']
+        $faded.ringSlot | Should -BeNullOrEmpty
+        $faded.color    | Should -BeNullOrEmpty
+
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        $reactivated = (Get-PendingState).known['s1']
+        $reactivated.ringSlot | Should -Not -BeNullOrEmpty
+        $reactivated.slot     | Should -Not -BeNullOrEmpty
+        $reactivated.color    | Should -Not -BeNullOrEmpty
+    }
+
+    It 'does not collide ring slots when reactivating one of two known sessions' {
+        Register-KnownSession -SessionId 's1' -Project 'P1' -Cwd 'C:/git/P1'
+        Register-KnownSession -SessionId 's2' -Project 'P2' -Cwd 'C:/git/P2'
+        # See the comment in the previous test -- 0.001h/4s instead of
+        # 0.0001h/500ms for the same margin-against-flakiness reason.
+        Set-KnownIdleFadeHours -Hours 0.001
+        Start-Sleep -Milliseconds 4000
+        [void](Get-PendingState)  # trigger the fade for both
+
+        Register-KnownSession -SessionId 's1' -Project 'P1' -Cwd 'C:/git/P1'
+        $state = Get-PendingState
+        # s2 is still faded (never re-registered), s1 got a fresh slot that
+        # must not collide with anything s2 might still be holding (it holds
+        # nothing right now since both faded, but this guards the taken-slots
+        # computation actually runs against live state, not a stale snapshot).
+        $state.known['s1'].ringSlot | Should -Not -BeNullOrEmpty
+    }
+
     It 'gives a second session in the same project ordinal 2' {
         Register-KnownSession -SessionId 's1' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'
         Register-KnownSession -SessionId 's2' -Project 'HomeAssistant' -Cwd 'C:/git/HomeAssistant'

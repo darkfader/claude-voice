@@ -470,6 +470,25 @@ function Register-KnownSession {
             }
             $state.known[$SessionId].activity      = $Activity
             $state.known[$SessionId].activitySince = $now
+            # Reactivation: a hook firing on a session whose slot/colour were
+            # cleared by idle-fade (see Get-PendingState) means it's back in
+            # use, so it needs a ring presence again. Fresh resolution, not
+            # an attempt to recall the old slot -- simpler, and the same
+            # project path still hashes to the same PREFERRED slot first, so
+            # in practice this often lands back in the same place anyway.
+            if ($null -eq $state.known[$SessionId].ringSlot -or $null -eq $state.known[$SessionId].color) {
+                $takenSlots = @($state.known.Values | Where-Object {
+                    $_ -ne $state.known[$SessionId] -and $null -ne $_.slot
+                } | ForEach-Object { $_.slot })
+                $newSlot = Resolve-SessionColorSlot -ProjectPath $Cwd -TakenSlots $takenSlots
+                $takenRing = @($state.known.Values | Where-Object {
+                    $_ -ne $state.known[$SessionId] -and $null -ne $_.ringSlot
+                } | ForEach-Object { $_.ringSlot })
+                $newRingSlot = Resolve-RingSlot -ProjectPath $Cwd -TakenSlots $takenRing
+                $state.known[$SessionId].slot     = $newSlot
+                $state.known[$SessionId].color    = ConvertFrom-HueSlot -Slot $newSlot
+                $state.known[$SessionId].ringSlot = $newRingSlot
+            }
             if ($TranscriptPath) { $state.known[$SessionId].transcriptPath = $TranscriptPath }
         } else {
             # Nudge against every OTHER known session's slot. Without this,
