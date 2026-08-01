@@ -273,11 +273,44 @@ function Get-PendingState {
             $state.known[$id].color = ConvertFrom-HueSlot -Slot (
                 Resolve-SessionColorSlot -ProjectPath ([string]$state.known[$id].cwd))
         }
+        # Idle basis for both new rules below: time since the session's last
+        # hook activity, regardless of activity state or transcript
+        # existence.
+        [datetime]$lastSeenAt = [datetime]::MinValue
+        [void][datetime]::TryParse([string]$state.known[$id].lastSeen, [ref]$lastSeenAt)
+
+        # Hard expiry: 48h idle removes the entry ALWAYS, transcript or not.
+        # Checked first and unconditionally -- this is the one rule that
+        # overrides "keep forever if transcript exists" below. A thread
+        # untouched for two days is gone from the ring regardless of whether
+        # its transcript file still happens to exist on disk.
+        if ($lastSeenAt -ne [datetime]::MinValue -and
+            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownHardExpiryHours)) {
+            $state.known.Remove($id) | Out-Null
+            continue
+        }
+
+        # Idle-fade: 1h idle releases the ring slot and colour (both set to
+        # $null) so Resolve-RingSlot/Resolve-SessionColorSlot can hand them
+        # to another session, but the entry itself stays in `known` -- it
+        # still shows in the VS Code threads list. Only touches fields that
+        # are not already $null, so this is a no-op on every read after the
+        # first fade.
+        if ($lastSeenAt -ne [datetime]::MinValue -and
+            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownIdleFadeHours) -and
+            ($null -ne $state.known[$id].ringSlot -or $null -ne $state.known[$id].slot -or
+             $null -ne $state.known[$id].color)) {
+            $state.known[$id].ringSlot = $null
+            $state.known[$id].slot     = $null
+            $state.known[$id].color    = $null
+        }
+
         # Retire on DELETION, not on silence. Claude Code writes a transcript
         # file per session, so its absence is the real "this thread is gone"
         # signal -- far better than guessing from a clock. A session you left
-        # this morning is still resumable tonight and belongs on the ring; one
-        # whose transcript you deleted does not, however recently you used it.
+        # this morning is still resumable tonight and belongs on the ring, up
+        # to the 48h hard expiry above; one whose transcript you deleted does
+        # not, however recently you used it.
         $transcript = [string]$state.known[$id].transcriptPath
         if ($transcript) {
             if (-not (Test-Path -LiteralPath $transcript)) {
@@ -287,7 +320,9 @@ function Get-PendingState {
         }
 
         # Backstop only, for entries registered before a transcript path was
-        # recorded (or by a hook payload that omitted it). 24h, not 4.
+        # recorded (or by a hook payload that omitted it). 24h, not 4. Fires
+        # strictly before the 48h hard expiry above would for this same
+        # subset of entries, so it remains the operative rule for them.
         [datetime]$seen = [datetime]::MinValue
         if ([datetime]::TryParse($state.known[$id].lastSeen, [ref]$seen)) {
             if ($seen -lt (Get-Date).AddHours(-1 * $script:KnownExpiryHours)) {

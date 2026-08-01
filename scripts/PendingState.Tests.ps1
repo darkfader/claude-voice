@@ -29,6 +29,8 @@ Describe 'PendingState' {
         Set-PendingStateMutexName -Name "Global\ClaudeVoicePendingStateTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
         Set-KnownExpiryHours -Hours 24
+        Set-KnownIdleFadeHours -Hours 1
+        Set-KnownHardExpiryHours -Hours 48
     }
 
     It 'returns empty state when no file exists yet' {
@@ -378,6 +380,8 @@ Describe 'known session registry' {
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceKnownTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
         Set-KnownExpiryHours -Hours 24
+        Set-KnownIdleFadeHours -Hours 1
+        Set-KnownHardExpiryHours -Hours 48
     }
 
     It 'registers a session with base colour, ordinal 1, and matching first/last seen' {
@@ -497,6 +501,30 @@ Describe 'known session registry' {
         Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $b
         (Get-PendingState).known['s1'].transcriptPath | Should -Be $b
     }
+
+    It 'clears ringSlot/slot/color for a known session idle past the fade window, but keeps the entry' {
+        $t = Join-Path $TestDrive "fade-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -TranscriptPath $t
+        $before = (Get-PendingState).known['s1']
+        $before.ringSlot | Should -Not -BeNullOrEmpty
+        $before.color    | Should -Not -BeNullOrEmpty
+
+        Set-KnownIdleFadeHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+        $after = (Get-PendingState).known['s1']
+        $after.ringSlot | Should -BeNullOrEmpty
+        $after.slot     | Should -BeNullOrEmpty
+        $after.color    | Should -BeNullOrEmpty
+        (Get-PendingState).known.ContainsKey('s1') | Should -BeTrue
+    }
+
+    It 'does not fade a known session inside the idle-fade window' {
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P'
+        $after = (Get-PendingState).known['s1']
+        $after.ringSlot | Should -Not -BeNullOrEmpty
+        $after.color    | Should -Not -BeNullOrEmpty
+    }
 }
 
 Describe 'known session colour distinctness' {
@@ -507,6 +535,8 @@ Describe 'known session colour distinctness' {
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceDistinctTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
         Set-KnownExpiryHours -Hours 24
+        Set-KnownIdleFadeHours -Hours 1
+        Set-KnownHardExpiryHours -Hours 48
     }
 
     It 'gives two sessions in the SAME folder different colours' {
@@ -547,6 +577,8 @@ Describe 'ring slot and activity on known sessions' {
         Set-PendingStateMutexName -Name "Global\ClaudeVoiceRingTest_$([guid]::NewGuid().ToString('N'))"
         Set-PendingStateExpiryHours -Hours 4
         Set-KnownExpiryHours -Hours 24
+        Set-KnownIdleFadeHours -Hours 1
+        Set-KnownHardExpiryHours -Hours 48
     }
 
     It 'assigns a ringSlot and records activity' {
