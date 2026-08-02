@@ -51,8 +51,7 @@ $conn = Get-HaConnection
 # Entity ID confirmed live (Task 1): ESPHome's `text_sensor:` platform
 # entities surface in HA under the `sensor.` domain (HA has no `text_sensor.`
 # domain), and this instance area-prefixes entity IDs with "bedroom_" -- the
-# same pattern already documented for the dial rotation sensor in Task 4 of
-# docs/superpowers/plans/2026-07-25-ha-voice-claude-wakeword-firmware.md.
+# same pattern used for the dial rotation sensor.
 $entityId = 'sensor.bedroom_home_assistant_voice_0932b4_firmware_build'
 
 # Right after a flash the device reboots (observed ~15-20s) before HA's

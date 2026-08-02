@@ -2,9 +2,7 @@
 
 Consolidated facts about this specific device and the UX decisions made for
 the `claude-voice` project, gathered by directly querying the device/HA and
-reading the actual firmware source rather than assuming. See
-`docs/superpowers/specs/2026-07-25-ha-voice-claude-integration-design.md`
-for the full design rationale.
+reading the actual firmware source rather than assuming.
 
 ## Device identity
 
@@ -15,12 +13,10 @@ for the full design rationale.
   ROM-level hardware bootloader — effectively unbrickable via USB/UART
   recovery, though wrong flash/PSRAM variant settings have bricked some
   units in the community (not a bootloader problem, a config problem).
-- Firmware version at last check: `26.6.0` (latest as of 2026-07). As of Plan
-  2 (Mode 2), the device runs a **custom build** based on that same `26.6.0`
-  tag — see
-  `docs/superpowers/plans/2026-07-25-ha-voice-claude-wakeword-firmware.md`
-  and `claude-voice/README.md` for the build/flash procedure — not
-  unmodified stock. The official
+- Firmware version at last check: `26.6.0` (latest as of 2026-07). The device
+  runs a **custom build** based on that same `26.6.0` tag — see
+  `README.md` for the build/flash procedure — not unmodified stock. The
+  official
   `update.home_assistant_voice_0932b4` OTA card still tracks stock upstream
   releases; installing from it would silently overwrite the custom build.
   **Do not click Install on that entity** — see `claude-voice/README.md`

@@ -14,8 +14,6 @@ Claude Code ↔ Home Assistant Voice integration.
   happened.
 - Installing it → this file.
 - Hardware facts and UX decisions → [`docs/home-assistant-voice-device.md`](docs/home-assistant-voice-device.md).
-- Full design rationale →
-  `docs/superpowers/specs/2026-07-25-ha-voice-claude-integration-design.md`.
 
 ## Components
 
@@ -107,9 +105,8 @@ HA calls around it are verified by running it.
 ## Mode 2: Custom firmware ("Hey Claude" wake word + dial rotation)
 
 Separate from the notification/control-surface setup below, this device
-also runs **custom ESPHome firmware** (Plan 2 /
-`docs/superpowers/plans/2026-07-25-ha-voice-claude-wakeword-firmware.md`)
-that adds a fourth wake word, "Hey Claude" (routed to an Anthropic-backed
+also runs **custom ESPHome firmware** that adds a fourth wake word,
+"Hey Claude" (routed to an Anthropic-backed
 Assist pipeline for freeform Q&A), and exposes the dial's rotation to Home
 Assistant so `ha-bridge.ps1` can cycle pending sessions by rotating the
 dial instead of double-pressing the button.
