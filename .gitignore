@@ -1,5 +1,6 @@
 # Secrets — never commit
 .env
+scripts/dictation/.env
 
 # Runtime state, not code
 state/*
@@ -7,3 +8,7 @@ state/*
 
 # ESPHome build cache/output
 firmware/.esphome/
+
+# Python artifacts
+__pycache__/
+*.pyc

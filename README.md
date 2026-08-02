@@ -237,6 +237,62 @@ reference (entity IDs, the LED-masking limitation, the wake-word
 sensitivity-control limitation for "Hey Claude") and the plan document
 above for the complete task-by-task build history.
 
+## Mode 3: Local voice dictation (hotkey)
+
+Push-to-talk hotkey (`Ctrl+Alt+Space` by default, configurable via
+`DICTATION_HOTKEY` in `.env`) records from your desktop microphone, transcribes
+locally via faster-whisper on the GPU, and types the result into the currently
+active Claude Code session's VS Code window (or falls back to typing into
+whichever window has OS focus if no session is tracked as active).
+
+This mode is **independent of `ha-bridge.ps1`** and works without Home Assistant
+running for the hotkey/transcription/typing path. However, **feedback tones**
+(record-start chime, record-stop chime, error tone) require a reachable Home
+Assistant instance and the HA Voice PE device, since they're played via
+`HaClient.psm1`'s chime functions (same `claude-voice/.env` credentials as the
+rest of this repo, via `Get-HaConnection`).
+
+**Note:** Currently both record-start and record-stop play the same chime sound
+(no distinct sounds yet) — only the error tone is a different sound. This is a
+known limitation of the current implementation, not a bug.
+
+### Setup
+
+1. Copy the config template:
+   ```powershell
+   Copy-Item claude-voice/scripts/dictation/.env.example claude-voice/scripts/dictation/.env
+   ```
+
+2. Edit `claude-voice/scripts/dictation/.env` and adjust as needed (e.g.,
+   `DICTATION_HOTKEY`, GPU device, etc.).
+
+3. Install Python dependencies:
+   ```powershell
+   pip install -r claude-voice/scripts/dictation/requirements.txt
+   ```
+
+4. Run the service:
+   ```powershell
+   python claude-voice/scripts/dictation/dictation_service.py
+   ```
+
+### Scope
+
+This mode covers the **desktop hotkey trigger only**. The HA Voice PE device's
+own physical button as a second trigger (streaming its microphone audio over the
+network to this service) is a separate, not-yet-built follow-on.
+
+For the complete design rationale and architecture, see
+`docs/superpowers/specs/2026-08-02-local-voice-dictation-design.md`.
+
+### Verification Status
+
+Live end-to-end verification (real hotkey press, real transcription, real typed
+text, real HA chimes) has not yet been performed on the real desktop as of this
+writing. This feature was built and reviewed task-by-task in a sandboxed
+environment without GPU/microphone/HA access; a first real run-through on actual
+hardware is still pending.
+
 ## Setup
 
 ### Prerequisites
