@@ -6,6 +6,22 @@
 # top-level buildable stock target (confirmed in Task 1) — the plain
 # home-assistant-voice.yaml is a package fragment missing wifi SSID/AP and
 # esp32_improv/improv_serial, and cannot compile standalone.
+# Push-to-talk UDP target (claude_ptt.h / overlay.yaml's claude_ptt_hold_check).
+# No secrets.yaml convention exists in this firmware tree today, so this is a
+# plain substitution rather than !secret -- override host/port here with the
+# desktop's actual LAN IP (needs a static assignment or a DHCP reservation;
+# see docs/superpowers/specs/2026-08-02-local-voice-dictation-design.md)
+# before flashing.
+#
+# 192.168.2.31 is the desk's current DHCP lease on Ethernet 2, not a
+# reservation -- it can change on lease renewal and silently break PTT with
+# no error on either end (the ESP32 will happily send UDP to a stale IP,
+# and nothing listens there to say otherwise). Set a DHCP reservation for
+# this host, or a static IP, and update this value to match.
+substitutions:
+  claude_ptt_udp_host: "192.168.2.31"
+  claude_ptt_udp_port: "6056"
+
 packages:
   upstream: !include home-assistant-voice-pe/home-assistant-voice.factory.yaml
   overlay: !include overlay.yaml
@@ -162,3 +178,229 @@ script:
                 blue: 0
                 id: voice_assistant_leds
                 effect: "Twinkle"
+
+# Full redefinition of center_button's on_multi_click -- removed in
+# overlay.yaml (see that file's comment on this same id). Byte-for-byte
+# reproduction of every upstream pattern from
+# home-assistant-voice-pe/home-assistant-voice.yaml's `binary_sensor:
+# center_button: on_multi_click:` block, EXCEPT Simple Click's innermost
+# action.
+#
+# Simple Click's timer/announcement/media-pause priority chain is untouched
+# -- only the final fallback (previously "start voice_assistant") changes.
+# It now fires a "single_press" event on the same button_press_event entity
+# double/triple/long-press already use, instead of opening HA's Assist
+# pipeline. This is what actually implements "single click types
+# continue/yes/okay to Claude instead of talking to Nabu" -- ha-bridge.ps1
+# picks up single_press the same way it already picks up the others.
+# center_button_press_sound is kept as the click's audible confirmation; the
+# 300ms delay before the old voice_assistant.start: is dropped since there's
+# no mic-open race to protect against anymore.
+binary_sensor:
+  - id: !extend center_button
+    on_multi_click:
+      # Simple Click:
+      #   - Abort "things" in order
+      #     - Timer
+      #     - Announcements
+      #     - Voice Assistant Pipeline run
+      #     - Music
+      #   - Otherwise: fire single_press for ha-bridge.ps1 to act on, if not muted.
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.25s
+        then:
+          - if:
+              condition:
+                lambda: return !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed);
+              then:
+                - if:
+                    condition:
+                      switch.is_on: timer_ringing
+                    then:
+                      - switch.turn_off: timer_ringing
+                    else:
+                      - if:
+                          condition:
+                            voice_assistant.is_running:
+                          then:
+                            - voice_assistant.stop:
+                          else:
+                            - if:
+                                condition:
+                                  media_player.is_announcing:
+                                    id: external_media_player
+                                then:
+                                  media_player.stop:
+                                    announcement: true
+                                    id: external_media_player
+                                else:
+                                  - if:
+                                      condition:
+                                        media_player.is_playing:
+                                          id: external_media_player
+                                      then:
+                                        - media_player.pause:
+                                            id: external_media_player
+                                      else:
+                                        - if:
+                                            condition:
+                                              and:
+                                                - switch.is_off: master_mute_switch
+                                                - not: voice_assistant.is_running
+                                            then:
+                                              - script.execute:
+                                                  id: play_sound
+                                                  priority: true
+                                                  sound_file: "center_button_press_sound"
+                                              - event.trigger:
+                                                  id: button_press_event
+                                                  event_type: "single_press"
+      # Double Click
+      #  . Exposed as an event entity. To be used in automations inside Home Assistant
+      - timing:
+          - ON for at most 1s
+          - OFF for at most 0.25s
+          - ON for at most 1s
+          - OFF for at least 0.25s
+        then:
+          - if:
+              condition:
+                lambda: return !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed);
+              then:
+                - script.execute:
+                    id: play_sound
+                    priority: false
+                    sound_file: "center_button_double_press_sound"
+                - event.trigger:
+                    id: button_press_event
+                    event_type: "double_press"
+      # Triple Click
+      #  . Exposed as an event entity. To be used in automations inside Home Assistant
+      - timing:
+          - ON for at most 1s
+          - OFF for at most 0.25s
+          - ON for at most 1s
+          - OFF for at most 0.25s
+          - ON for at most 1s
+          - OFF for at least 0.25s
+        then:
+          - if:
+              condition:
+                lambda: return !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed);
+              then:
+                - script.execute:
+                    id: play_sound
+                    priority: false
+                    sound_file: "center_button_triple_press_sound"
+                - event.trigger:
+                    id: button_press_event
+                    event_type: "triple_press"
+      # Long Press
+      #  . Exposed as an event entity. To be used in automations inside Home Assistant
+      - timing:
+          - ON for at least 1s
+        then:
+          - if:
+              condition:
+                lambda: return !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed);
+              then:
+                - script.execute:
+                    id: play_sound
+                    priority: false
+                    sound_file: "center_button_long_press_sound"
+                - light.turn_off: voice_assistant_leds
+                - event.trigger:
+                    id: button_press_event
+                    event_type: "long_press"
+      # Very important do not remove. Trust me :D
+      - timing:
+          # H ....
+          - ON for at most 0.2s
+          - OFF for 0s to 2s
+          - ON for at most 0.2s
+          - OFF for 0s to 2s
+          - ON for at most 0.2s
+          - OFF for 0s to 2s
+          - ON for at most 0.2s
+          - OFF for 0.5s to 2s
+          # A ._
+          - ON for at most 0.2s
+          - OFF for 0s to 2s
+          - ON for 0.2s to 2s
+        then:
+          - if:
+              condition:
+                lambda: return !id(init_in_progress);
+              then:
+                - light.turn_on:
+                    brightness: 100%
+                    id: voice_assistant_leds
+                    effect: "Tick"
+                - script.execute:
+                    id: play_sound
+                    priority: true
+                    sound_file: "easter_egg_tick_sound"
+                - delay: 4s
+                - light.turn_off: voice_assistant_leds
+                - script.execute:
+                    id: play_sound
+                    priority: true
+                    sound_file: "easter_egg_tada_sound"
+                - light.turn_on:
+                    brightness: 100%
+                    id: voice_assistant_leds
+                    effect: "Rainbow"
+                - event.trigger:
+                    id: button_press_event
+                    event_type: "easter_egg_press"
+      # Factory Reset Warning
+      #  . Audible and Visible warning.
+      - timing:
+          - ON for at least 10s
+        then:
+          - if:
+              condition:
+                lambda: return !id(dial_touched);
+              then:
+                - light.turn_on:
+                    brightness: 100%
+                    id: voice_assistant_leds
+                    effect: "Factory Reset Coming Up"
+                - script.execute:
+                    id: play_sound
+                    priority: true
+                    sound_file: "factory_reset_initiated_sound"
+                - wait_until:
+                    binary_sensor.is_off: center_button
+                - if:
+                    condition:
+                      lambda: return !id(factory_reset_requested);
+                    then:
+                      - light.turn_off: voice_assistant_leds
+                      - script.execute:
+                          id: play_sound
+                          priority: true
+                          sound_file: "factory_reset_cancelled_sound"
+      # Factory Reset Confirmed.
+      #  . Audible warning to prompt user to release the button
+      #  . Set factory_reset_requested to true
+      - timing:
+          - ON for at least 22s
+        then:
+          - if:
+              condition:
+                lambda: return !id(dial_touched);
+              then:
+                - script.execute:
+                    id: play_sound
+                    priority: true
+                    sound_file: "factory_reset_confirmed_sound"
+                - light.turn_on:
+                    brightness: 100%
+                    red: 100%
+                    green: 0%
+                    blue: 0%
+                    id: voice_assistant_leds
+                    effect: "none"
+                - lambda: id(factory_reset_requested) = true;

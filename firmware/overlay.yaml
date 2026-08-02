@@ -35,6 +35,15 @@
 #    remaining fields onto it — so only `name:` is added; pins, resolution,
 #    and the on_clockwise/on_anticlockwise scripts are left byte-identical
 #    to upstream.
+# Push-to-talk (claude_ptt.h): raw C++ socket/mic wiring the button hold
+# gesture below (see the `binary_sensor: center_button` extension and the
+# claude_ptt_hold_check/claude_ptt_release scripts) uses to stream audio.
+# Path is relative to this file's directory, same resolution rule noted for
+# the hey_claude model manifest above.
+esphome:
+  includes:
+    - claude_ptt.h
+
 micro_wake_word:
   models:
     - model: models/hey_claude.json
@@ -111,6 +120,85 @@ script:
   # Replaced in custom-voice-pe.yaml.
   - id: !extend control_leds_voice_assistant_not_ready_phase
     then: !remove
+
+  # Push-to-talk. A hold is deliberately NOT modeled with on_multi_click's
+  # `ON for at least Ns` timing (what "Long Press" already uses) because that
+  # only fires the action on RELEASE -- streaming has to start while the
+  # button is still down. Instead this runs off center_button's raw on_press
+  # (below), with its own short debounce delay so a normal simple/double/
+  # triple click doesn't briefly open a socket before the click completes.
+  #
+  # 300ms: comfortably above the "at most 1s ON" window multi_click itself
+  # tolerates for a single click's press phase, so a genuine quick click
+  # never lives long enough to trip this, but short enough that PTT feels
+  # immediate once the user actually holds.
+  - id: claude_ptt_hold_check
+    mode: restart
+    then:
+      - delay: 300ms
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_on: center_button
+              - switch.is_off: master_mute_switch
+              - switch.is_off: timer_ringing
+              - not:
+                  voice_assistant.is_running:
+              - lambda: 'return !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed);'
+          then:
+            # group_volume_changed is the existing "suppress the on-release
+            # click action" flag (see claude_held_volume above) -- reused
+            # here rather than adding a second flag, since it already guards
+            # every on_multi_click branch (simple/double/triple/long press)
+            # in home-assistant-voice.yaml and we need all of them
+            # suppressed, not just the simple click.
+            #
+            # dial_touched is ALSO set here, for a completely different
+            # gesture: home-assistant-voice.yaml's Factory Reset Warning
+            # (>=10s held) and Factory Reset Confirmed (>=22s held) timings
+            # check `!id(dial_touched)`, NOT group_volume_changed, and a
+            # normal multi-second dictation utterance blows straight through
+            # 10s of held button. Without this, PTT triggers the stock
+            # factory-reset-warning flow mid-dictation (ring goes to
+            # "Factory Reset Coming Up", audible warning) and a sufficiently
+            # long utterance would trip an actual factory reset at 22s. This
+            # is the same flag centre-held dial rotation already sets for
+            # exactly this reason -- reusing it here, not inventing a new
+            # guard for the same upstream gesture.
+            - lambda: |-
+                id(group_volume_changed) = true;
+                id(dial_touched) = true;
+                id(ptt_active) = true;
+            - light.turn_on:
+                id: voice_assistant_leds
+                brightness: 100%
+                effect: "Listening For Command"
+            - lambda: |-
+                claude_ptt::get_instance(id(i2s_mics), "${claude_ptt_udp_host}", ${claude_ptt_udp_port}).start();
+  - id: claude_ptt_release
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ptt_active);'
+          then:
+            - lambda: |-
+                id(ptt_active) = false;
+                claude_ptt::get_instance(id(i2s_mics), "${claude_ptt_udp_host}", ${claude_ptt_udp_port}).stop();
+            # dial_touched reset immediately (not delayed like
+            # group_volume_changed below): its only other effect is
+            # control_leds' dial-touched branch (the volume-bar overlay), and
+            # leaving it true into the control_leds call right below would
+            # paint the volume bar over the ring instead of restoring the
+            # normal idle/thread display.
+            - lambda: id(dial_touched) = false;
+            - script.execute: control_leds
+            # Matches claude_held_volume's own delay before releasing this
+            # flag: on_multi_click needs up to ~0.25s of OFF time after
+            # release to confirm no further click follows, so the guard has
+            # to outlive that window or a held-and-released PTT gesture would
+            # still fire as a simple click underneath it.
+            - delay: 1s
+            - lambda: id(group_volume_changed) = false;
 
 sensor:
   - id: !extend dial
@@ -325,6 +413,14 @@ globals:
   - id: ring_arrive_b
     type: uint8_t
     initial_value: '0'
+  # True while claude_ptt_hold_check has committed to a push-to-talk hold
+  # and the UDP stream is (meant to be) open. Read by claude_ptt_release to
+  # know whether there's anything to tear down, and reused nowhere else --
+  # unlike group_volume_changed, this one is PTT-specific.
+  - id: ptt_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
 
 # Ring render (Task 7). Adds one addressable_lambda effect, "Claude Threads",
 # to the existing (upstream) voice_assistant_leds light. Because ESPHome's
@@ -459,3 +555,35 @@ number:
       - lambda: |-
           id(ring_slot_offset) = (uint8_t) x;
           ESP_LOGD("claude_ring", "ring_slot_offset set to %u", (unsigned) id(ring_slot_offset));
+
+# Push-to-talk hold gesture. Additive on_press/on_release entries -- package
+# merging concatenates lists on an !extend'd id (verified for on_clockwise/
+# on_press elsewhere in this repo), so these run alongside, not instead of,
+# the stock control_leds/factory-reset handlers already on center_button.
+#
+# on_multi_click is NOT additive here -- it is removed and fully redefined in
+# custom-voice-pe.yaml (merged after all packages), same split the dial
+# handlers and control_leds bodies already use elsewhere in this repo ("a key
+# cannot be both removed and assigned in the same mapping"). The redefinition
+# is a byte-for-byte copy of every upstream on_multi_click pattern (double/
+# triple/long press, easter egg, factory-reset warning/confirm) EXCEPT Simple
+# Click's innermost action, which now fires our own "single_press" event
+# instead of starting voice_assistant -- see that file for why, and for the
+# full original text this was diffed against.
+binary_sensor:
+  - id: !extend center_button
+    on_press:
+      - script.execute: claude_ptt_hold_check
+    on_release:
+      - script.execute: claude_ptt_release
+    on_multi_click: !remove
+
+# button_press_event's event_types is a fixed enum (home-assistant-voice.yaml
+# validates event.trigger's event_type against it) -- single_press must be
+# declared here or HA/ESPHome would reject custom-voice-pe.yaml's new
+# single_press trigger. Additive list entry on an !extend'd id, same
+# concatenation behaviour already relied on elsewhere in this file.
+event:
+  - id: !extend button_press_event
+    event_types:
+      - single_press
