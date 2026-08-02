@@ -393,12 +393,6 @@ light:
             const float phase = (float) (now % 1000u) / 1000.0f;
             const uint8_t pulse = (uint8_t) (90.0f + 165.0f * (0.5f + 0.5f * cosf(phase * 6.2831853f)));
 
-            // Track which physical LED slots end up occupied by a parked
-            // thread, so pass 2 (orbiters) can tell "empty ring" from
-            // "orbiting over someone" and dim accordingly.
-            bool occupied[12] = { false, false, false, false, false, false,
-                                   false, false, false, false, false, false };
-
             for (int k = 0; k < n; k++) {
               const char st = id(ring_state)[k];
               if (st == 'w') continue;
@@ -412,7 +406,6 @@ light:
               else                bright = 70;
               uint8_t slotIdx = (id(ring_slot)[k] + id(ring_slot_offset)) % 12;
               it[slotIdx] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * bright;
-              occupied[slotIdx] = true;
             }
 
             // Pass 2 (was pass 1): orbiters, drawn AFTER parked threads now,
@@ -433,12 +426,14 @@ light:
               if (id(ring_state)[k] != 'w') continue;
               // Stagger multiple orbiters so they do not fly in formation.
               uint8_t i = (uint8_t) ((step + orbiter * 4u) % 12u);
-              // Full 200 over an empty slot; half (100) when passing over a
-              // slot a parked thread already occupies -- still always
-              // visible, just visibly dimmer to signal something is
-              // underneath, rather than fully hidden as before.
-              uint8_t orbiterBright = occupied[i] ? 100 : 200;
-              it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * orbiterBright;
+              // Always full 200, whether or not this slot has a parked
+              // thread under it. A dim/bright split (100 vs 200) was tried
+              // first to distinguish "orbiting over someone" from "orbiting
+              // over empty ring", but proved too subtle to read at a glance
+              // on a moving LED -- full brightness every time is
+              // unambiguous, and pass ordering alone (below) still
+              // guarantees the orbiter is never hidden.
+              it[i] = Color(id(ring_r)[k], id(ring_g)[k], id(ring_b)[k]) * 200;
               orbiter++;
             }
 
