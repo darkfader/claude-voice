@@ -11,6 +11,8 @@ class DictationConfig:
     whisper_device: str
     hotkey: str
     dictate_type_script: Path
+    udp_port: int
+    udp_idle_timeout_s: float
 
 
 def load_config(dotenv_path: str = None) -> DictationConfig:
@@ -20,4 +22,10 @@ def load_config(dotenv_path: str = None) -> DictationConfig:
         whisper_device=os.environ.get('DICTATION_WHISPER_DEVICE', 'cuda'),
         hotkey=os.environ.get('DICTATION_HOTKEY', 'ctrl+alt+space'),
         dictate_type_script=Path(__file__).resolve().parent.parent / 'dictate-type.ps1',
+        # Must match firmware/custom-voice-pe.yaml's claude_ptt_udp_port substitution.
+        udp_port=int(os.environ.get('DICTATION_UDP_PORT', '6056')),
+        # Fallback only: claude_ptt.h sends an explicit end-of-utterance marker on
+        # button release, which is the primary stop signal. This just bounds how
+        # long a stream sits open if that marker is lost (WiFi drop).
+        udp_idle_timeout_s=float(os.environ.get('DICTATION_UDP_IDLE_TIMEOUT_S', '2.0')),
     )

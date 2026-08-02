@@ -9,6 +9,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 
 from dictation_config import load_config
+from overlay_indicator import OverlayIndicator
+from udp_receiver import UdpPttReceiver
 
 SAMPLE_RATE = 16000
 
@@ -76,6 +78,7 @@ def main():
     recorder = Recorder()
     state_lock = threading.Lock()
     recording = {'active': False}
+    overlay = OverlayIndicator()
 
     def on_press():
         with state_lock:
@@ -83,6 +86,7 @@ def main():
                 return
             recording['active'] = True
         recorder.start()
+        overlay.show('listening')
         play_tone('start')
 
     def on_release():
@@ -92,9 +96,31 @@ def main():
             recording['active'] = False
         audio = recorder.stop()
         play_tone('stop')
-        if audio.size == 0:
-            return
-        transcribe_and_dispatch(audio, config.dictate_type_script, whisper_model)
+        try:
+            if audio.size == 0:
+                return
+            overlay.show('processing')
+            transcribe_and_dispatch(audio, config.dictate_type_script, whisper_model)
+        finally:
+            overlay.hide()
+
+    def on_udp_start():
+        overlay.show('listening')
+        play_tone('start')
+
+    def on_udp_stop(audio):
+        play_tone('stop')
+        try:
+            if audio.size == 0:
+                return
+            overlay.show('processing')
+            transcribe_and_dispatch(audio, config.dictate_type_script, whisper_model)
+        finally:
+            overlay.hide()
+
+    udp_receiver = UdpPttReceiver(config.udp_port, config.udp_idle_timeout_s, on_udp_start, on_udp_stop)
+    udp_receiver.start_in_background()
+    print(f'Listening for PE push-to-talk on UDP :{config.udp_port}.')
 
     keyboard.add_hotkey(config.hotkey, on_press, trigger_on_release=False)
     keyboard.add_hotkey(config.hotkey, on_release, trigger_on_release=True)
