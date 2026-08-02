@@ -394,6 +394,34 @@ function Invoke-ButtonEvent {
             }
             Publish-RingState -Connection $Connection
         }
+        'reply' {
+            # single_press: type $result.Text (continue/okay -- never on an
+            # 'attention' session, Get-ButtonAction routes those to 'focus'
+            # instead) into the session's window and submit it.
+            # confirm-session.ps1 brings the window to the foreground to type
+            # into it either way (same as every other typing path in this
+            # repo, e.g. dictate-type.ps1) -- there's no focus-free typing
+            # mechanism here, so this does briefly steal focus like 'focus'
+            # does, it just also submits text rather than leaving it there.
+            # Same windowPid/title resolution as the 'focus' branch above.
+            $entry = $state.sessions[$result.SessionId]
+            $replyPid = 0
+            if ($state.known.ContainsKey($result.SessionId)) {
+                $knownEntry = $state.known[$result.SessionId]
+                if ($knownEntry.windowPid) { $replyPid = [int]$knownEntry.windowPid }
+                if ($knownEntry.title)     { $entry = $knownEntry }
+            }
+            # No -KeepPending: confirm-session.ps1 clears the pending state
+            # itself by default (same as the 'focus' branch above relies on).
+            & (Join-Path $PSScriptRoot 'confirm-session.ps1') -SessionId $result.SessionId -Project $entry.project -WindowPid $replyPid -Text $result.Text
+            if ($LASTEXITCODE -ne 0) {
+                Invoke-HaErrorSound -Connection $Connection | Out-Null
+            } else {
+                Invoke-HaChime -Connection $Connection | Out-Null
+                Set-RemainingLed -Connection $Connection
+            }
+            Publish-RingState -Connection $Connection
+        }
         'dismiss' {
             Clear-PendingSession -SessionId $result.SessionId
             Set-RemainingLed -Connection $Connection

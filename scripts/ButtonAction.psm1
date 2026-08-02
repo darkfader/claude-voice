@@ -5,36 +5,32 @@ function Get-KnownCycleTarget {
         [string]$Cursor,
         [Parameter(Mandatory)][ValidateSet('cw','ccw')][string]$Direction
     )
-    # EVERY thread is selectable, working ones included. An earlier version
-    # skipped threads mid-turn on the theory that you would not want to land
-    # on one -- but you often do: to watch it, or to interrupt it. Skipping
-    # also made the ring and the dial disagree about what existed, which is
-    # worse than an occasional unwanted stop.
+    # Working (mid-turn) threads are no longer selectable by the dial. An
+    # earlier version of this comment argued the opposite -- that you often
+    # want to land on one, to watch or interrupt it -- but PTT (hold the
+    # center button and talk) now gives a direct way to interrupt whatever is
+    # running without dial-selecting it first, so the dial's job narrows to
+    # "what's waiting for you or has finished."
     #
     # Stable firstSeen order, NOT most-recently-used. MRU suits Alt-Tab, where
     # the list is invisible and a held modifier bounds the gesture. On a
     # physical dial it means the list reorders under your fingers, so the same
     # rotation stops landing in the same place.
-    $names = @($KnownSessions.Keys | Sort-Object { $KnownSessions[$_].firstSeen })
+    $names = @($KnownSessions.Keys | Where-Object { $KnownSessions[$_].activity -ne 'working' } |
+        Sort-Object { $KnownSessions[$_].firstSeen })
     if ($names.Count -eq 0) { return $null }
 
     $idx = [array]::IndexOf($names, $Cursor)
     if ($idx -lt 0) {
-        # No cursor, or one naming a session that has since expired.
+        # No cursor, one naming a session that has since expired, or one that
+        # has since started working (and so dropped out of $names above).
         #
         # Enter at whatever LAST WANTED YOU, not at the end of the list. The
         # overwhelmingly common reason to reach for the dial is that something
         # just finished or asked a question -- so the first detent should land
-        # there rather than making you hunt for it.
-        #
-        # "Wanted you" means activity is `attention` (asking) or `idle`
-        # (finished a turn); a `working` thread has not asked for anything yet.
-        # Among those, the most recent activitySince wins. If every thread is
-        # working, fall back to the most recent of those, since there is no
-        # better claim on the human's attention.
-        $ranked = @($names | Where-Object { $KnownSessions[$_].activity -ne 'working' })
-        if ($ranked.Count -eq 0) { $ranked = $names }
-        $entry = @($ranked | Sort-Object -Descending {
+        # there rather than making you hunt for it. Among the (already
+        # working-excluded) candidates, the most recent activitySince wins.
+        $entry = @($names | Sort-Object -Descending {
             [datetime]$t = [datetime]::MinValue
             if ([datetime]::TryParse([string]$KnownSessions[$_].activitySince, [ref]$t)) { $t } else { [datetime]::MinValue }
         })[0]
@@ -50,7 +46,7 @@ function Get-KnownCycleTarget {
 
 function Get-ButtonAction {
     param(
-        [Parameter(Mandatory)][ValidateSet('double_press','long_press','triple_press','easter_egg_press')]
+        [Parameter(Mandatory)][ValidateSet('single_press','double_press','long_press','triple_press','easter_egg_press')]
         [string]$EventType,
         [Parameter(Mandatory)][hashtable]$PendingSessions,
         [string]$Cursor,
@@ -67,29 +63,20 @@ function Get-ButtonAction {
     }
 
     # double_press resolves against KNOWN sessions, not pending ones, and so
-    # must be handled before the "nothing pending" bail-out below. The dial
-    # sets the cursor from the known map, so a cursor pointing at a session
-    # that is merely known is normal and expected -- resolving double_press
-    # against pending sessions instead would ignore the dial's selection
-    # entirely and, with exactly one session pending, silently activate THAT
-    # one instead of the one the ring is showing.
+    # must be handled before the "nothing pending" bail-out below.
+    #
+    # No longer resolves against the dial's current selection ("take me to
+    # what's selected") -- it now jumps straight to whichever known thread
+    # most recently finished or asked for you, ignoring $Cursor entirely.
+    # Reuses Get-KnownCycleTarget's own entry-point ranking (working threads
+    # excluded, most recent activitySince wins) by asking it to resolve with
+    # no cursor, rather than duplicating that ranking here.
     if ($EventType -eq 'double_press') {
-        # The dial owns cycling now, which frees double-press to mean "take me
-        # to what's selected" -- the gesture you want after alt-tabbing away,
-        # when the selection is already right. Unlike long_press it
-        # deliberately does NOT clear the pending light.
-        $knownNames = @($KnownSessions.Keys | Sort-Object { $KnownSessions[$_].firstSeen })
-        if ($knownNames.Count -eq 0) {
+        $target = Get-KnownCycleTarget -KnownSessions $KnownSessions -Cursor $null -Direction 'cw'
+        if (-not $target) {
             return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing pending' }
         }
-        $effectiveCursor = $Cursor
-        if ((-not $effectiveCursor -or $knownNames -notcontains $effectiveCursor) -and $knownNames.Count -eq 1) {
-            $effectiveCursor = $knownNames[0]
-        }
-        if (-not $effectiveCursor -or $knownNames -notcontains $effectiveCursor) {
-            return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing selected' }
-        }
-        return @{ Action = 'activate'; SessionId = $effectiveCursor; Speak = $null }
+        return @{ Action = 'activate'; SessionId = $target; Speak = $null }
     }
 
     if ($names.Count -eq 0) {
@@ -97,6 +84,32 @@ function Get-ButtonAction {
     }
 
     switch ($EventType) {
+        'single_press' {
+            # A quick tap: reply on the session's behalf without switching
+            # focus to it -- firmware now fires this instead of starting HA's
+            # own Assist pipeline (see custom-voice-pe.yaml's on_multi_click
+            # redefinition).
+            $effectiveCursor = $Cursor
+            if ((-not $effectiveCursor -or $names -notcontains $effectiveCursor) -and $names.Count -eq 1) {
+                $effectiveCursor = $names[0]
+            }
+            if (-not $effectiveCursor -or $names -notcontains $effectiveCursor) {
+                return @{ Action = 'none'; SessionId = $null; Speak = 'Nothing selected' }
+            }
+            $activity = $null
+            if ($KnownSessions.ContainsKey($effectiveCursor)) { $activity = $KnownSessions[$effectiveCursor].activity }
+            if ($activity -eq 'attention') {
+                # 'attention' is overwhelmingly a permission prompt. A blind
+                # auto-typed "yes" from across the room would approve
+                # whatever it's asking sight-unseen -- the exact thing
+                # long_press's own comment above already refuses to do.
+                # Fall back to focus instead, so a human actually sees the
+                # prompt before answering it themselves.
+                return @{ Action = 'focus'; SessionId = $effectiveCursor; Speak = $null }
+            }
+            $text = if ($activity -eq 'idle') { 'continue' } else { 'okay' }
+            return @{ Action = 'reply'; SessionId = $effectiveCursor; Speak = $null; Text = $text }
+        }
         'long_press' {
             $effectiveCursor = $Cursor
             if ((-not $effectiveCursor -or $names -notcontains $effectiveCursor) -and $names.Count -eq 1) {
