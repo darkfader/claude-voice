@@ -1,0 +1,9 @@
+# Secrets — never commit
+.env
+
+# Runtime state, not code
+state/*
+!state/.gitkeep
+
+# ESPHome build cache/output
+firmware/.esphome/
