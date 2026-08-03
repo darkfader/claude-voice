@@ -128,6 +128,24 @@ function allTabs() {
 }
 
 /**
+ * Whether a tab label and a thread title refer to the same thing.
+ *
+ * Exact match first, then prefix in EITHER direction, then substring. Claude
+ * Code truncates long titles in the tab label, so an exact comparison alone
+ * misses often, and the truncated label is typically a PREFIX of the full
+ * title (label.startsWith would never fire the other way around) -- going
+ * straight to substring would instead risk matching an unrelated tab that
+ * merely contains the words. Shared by findTab (must know WHICH tab) and the
+ * status table's "here" column (only needs yes/no) so the two can't drift.
+ */
+function titleMatchesLabel(label, title) {
+    const l = normalise(label);
+    const t = normalise(title);
+    if (!l || !t) return false;
+    return l === t || l.startsWith(t) || t.startsWith(l) || l.includes(t);
+}
+
+/**
  * Find the tab for a focus request.
  *
  * Exact match first, then prefix, then substring. Claude Code truncates long
@@ -226,9 +244,13 @@ async function handleFocusRequest(stateDir) {
 // ------------------------------------------------------------------- status
 
 function bridgeRunning() {
+    // ha_bridge.py (Python) as of the PowerShell->Python migration --
+    // ha-bridge.ps1 is kept alongside during the migration but is no
+    // longer what's actually run; checking for it here would report "NOT
+    // running" against a genuinely healthy Python bridge.
     try {
         const out = cp.execSync(
-            'powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \\"Name=\'pwsh.exe\'\\" | Where-Object { $_.CommandLine -like \'*ha-bridge.ps1*\' -and $_.CommandLine -notlike \'*Where-Object*\' }).Count"',
+            'powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \\"Name=\'python.exe\'\\" | Where-Object { $_.CommandLine -like \'*ha_bridge.py*\' -and $_.CommandLine -notlike \'*Where-Object*\' }).Count"',
             { encoding: 'utf8', timeout: 5000, windowsHide: true }
         );
         return parseInt(out.trim(), 10) > 0;
@@ -374,12 +396,12 @@ async function cmdShowStatus(stateDir) {
     lines.push(`${ANSI.bold}ALL THREADS${ANSI.reset} (every window, every project)`);
     lines.push(`${ANSI.dim}  colour  hex      slot  state      where        title${ANSI.reset}`);
     const sorted = Object.entries(known).sort((a, b) => (a[1].ringSlot || 0) - (b[1].ringSlot || 0));
-    const localLabels = allTabs().map(t => normalise(t.label));
+    const localLabels = allTabs().map(t => t.label);
     for (const [, e] of sorted) {
-        const here = localLabels.some(l => l === normalise(e.title) || (e.title && l.includes(normalise(e.title))));
+        const here = e.title && localLabels.some(l => titleMatchesLabel(l, e.title));
         lines.push(
             `  ${swatch(e)}  ` +
-            `${String(e.ringSlot).padStart(2)}    ` +
+            `${(e.ringSlot != null ? String(e.ringSlot) : '-').padStart(2)}    ` +
             `${activityTag(e.activity)}  ` +
             `${here ? `${ANSI.bold}THIS WINDOW${ANSI.reset}` : `${ANSI.dim}elsewhere  ${ANSI.reset}`}  ` +
             `${e.title || `${ANSI.dim}(untitled)${ANSI.reset}`}`
@@ -501,14 +523,18 @@ function cmdUninstallHooks() {
 
 function cmdStartBridge(stateDir) {
     const root = stateDir ? repoRootFrom(stateDir) : '';
-    const script = path.join(root, 'claude-voice', 'scripts', 'ha-bridge.ps1');
-    runPwsh(`Start-Process pwsh -ArgumentList '-NoProfile','-File','${script}' -WindowStyle Hidden; Write-Host 'Bridge started.'`, 'Claude Voice: start bridge');
+    const scriptDir = path.join(root, 'claude-voice', 'scripts');
+    const script = path.join(scriptDir, 'ha_bridge.py');
+    // -WindowStyle Hidden wraps python.exe itself, not pwsh -- the bridge
+    // is a plain Python process now, launched via Start-Process only for
+    // the hidden-window behavior.
+    runPwsh(`Start-Process python -ArgumentList '${script}' -WorkingDirectory '${scriptDir}' -WindowStyle Hidden; Write-Host 'Bridge started.'`, 'Claude Voice: start bridge');
 }
 
 function cmdStopBridge() {
     runPwsh(
-        `Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" | ` +
-        `Where-Object { $_.CommandLine -like '*ha-bridge.ps1*' -and $_.CommandLine -notlike '*Where-Object*' } | ` +
+        `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | ` +
+        `Where-Object { $_.CommandLine -like '*ha_bridge.py*' -and $_.CommandLine -notlike '*Where-Object*' } | ` +
         `ForEach-Object { Stop-Process -Id $_.ProcessId -Force; "stopped $($_.ProcessId)" }`,
         'Claude Voice: stop bridge'
     );
