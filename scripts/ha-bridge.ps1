@@ -1,4 +1,20 @@
 # claude-voice/scripts/ha-bridge.ps1
+
+# Single-instance guard. Two bridges running against the same HA connection
+# would both react to every dial rotation and button press -- duplicate
+# focus calls, duplicate "activate"/"reply" dispatches, duplicate ring
+# pushes racing each other. There's no OS-level failure that would catch
+# this the way e.g. a duplicate UDP bind does (dictation_service.py); a
+# second instance would start up and run "successfully" right alongside the
+# first. Held for the whole process lifetime (never released, not even in
+# a finally) -- the OS reclaims it automatically on exit, same as any
+# process-scoped named mutex.
+$script:SingletonMutex = New-Object System.Threading.Mutex($false, 'Global\ClaudeVoiceHaBridgeSingleton')
+if (-not $script:SingletonMutex.WaitOne(0)) {
+    Write-Warning 'ha-bridge.ps1 is already running (another instance holds the singleton mutex) -- exiting.'
+    exit 1
+}
+
 Import-Module (Join-Path $PSScriptRoot 'PendingState.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'HaClient.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ButtonAction.psm1') -Force
