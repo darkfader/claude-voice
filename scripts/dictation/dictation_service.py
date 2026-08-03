@@ -9,6 +9,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 
 from dictation_config import load_config
+from esphome_ring import make_from_config
+from mdns_advertise import MdnsAdvertiser
 from overlay_indicator import OverlayIndicator
 from udp_receiver import UdpPttReceiver
 
@@ -79,6 +81,9 @@ def main():
     state_lock = threading.Lock()
     recording = {'active': False}
     overlay = OverlayIndicator()
+    ring_signal = make_from_config(config)
+    if ring_signal is None:
+        print('CLAUDE_PTT_ESPHOME_HOST/NOISE_PSK not set -- ring will not show "processing", only the overlay dot.')
 
     def on_press():
         with state_lock:
@@ -114,13 +119,26 @@ def main():
             if audio.size == 0:
                 return
             overlay.show('processing')
+            if ring_signal:
+                ring_signal.set_processing(True)
             transcribe_and_dispatch(audio, config.dictate_type_script, whisper_model)
         finally:
             overlay.hide()
+            if ring_signal:
+                ring_signal.set_processing(False)
 
     udp_receiver = UdpPttReceiver(config.udp_port, config.udp_idle_timeout_s, on_udp_start, on_udp_stop)
     udp_receiver.start_in_background()
     print(f'Listening for PE push-to-talk on UDP :{config.udp_port}.')
+
+    # Advertised so claude_ptt.h can find this machine via mDNS instead of a
+    # hardcoded IP -- lets the same firmware work on any network (home,
+    # work, ...) that has a dictation_service.py running on it. The
+    # variable itself is otherwise unused, but must stay alive: Zeroconf's
+    # background responder stops if this is garbage collected, and it stays
+    # referenced by this frame for as long as keyboard.wait() blocks below
+    # (i.e. the whole process lifetime).
+    mdns_advertiser = MdnsAdvertiser(config.udp_port)  # noqa: F841
 
     keyboard.add_hotkey(config.hotkey, on_press, trigger_on_release=False)
     keyboard.add_hotkey(config.hotkey, on_release, trigger_on_release=True)

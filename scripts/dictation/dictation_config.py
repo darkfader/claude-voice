@@ -13,6 +13,9 @@ class DictationConfig:
     dictate_type_script: Path
     udp_port: int
     udp_idle_timeout_s: float
+    esphome_host: str
+    esphome_port: int
+    esphome_noise_psk: str
 
 
 def load_config(dotenv_path: str = None) -> DictationConfig:
@@ -28,4 +31,10 @@ def load_config(dotenv_path: str = None) -> DictationConfig:
         # button release, which is the primary stop signal. This just bounds how
         # long a stream sits open if that marker is lost (WiFi drop).
         udp_idle_timeout_s=float(os.environ.get('DICTATION_UDP_IDLE_TIMEOUT_S', '2.0')),
+        # Direct-to-device ESPHome native API connection (see esphome_ring.py) --
+        # empty noise_psk means the ring-processing signal is silently skipped,
+        # not an error, since it's a visual nice-to-have, not core functionality.
+        esphome_host=os.environ.get('CLAUDE_PTT_ESPHOME_HOST', ''),
+        esphome_port=int(os.environ.get('CLAUDE_PTT_ESPHOME_PORT', '6053')),
+        esphome_noise_psk=os.environ.get('CLAUDE_PTT_ESPHOME_NOISE_PSK', ''),
     )

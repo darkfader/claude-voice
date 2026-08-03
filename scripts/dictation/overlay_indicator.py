@@ -2,10 +2,12 @@
 """Transparent, click-through, always-on-top mic-status dot for Windows.
 
 Sits top-center of the screen, hidden until dictation is actually in
-progress -- listening (recording audio, blinking red) or processing
+progress -- listening (recording audio, blinking green) or processing
 (faster-whisper transcribing, solid amber) -- then hides again once
 dispatch is done. Mirrors this repo's existing state-feedback conventions
-(play-dictation-tone.ps1's start/stop/error tones) but visually.
+(play-dictation-tone.ps1's start/stop/error tones) but visually. Colours
+match the physical ring's PTT indication (see overlay.yaml's
+claude_ptt_hold_check) so the two read as the same signal.
 
 Tk is not thread-safe: widgets may only be touched from the thread running
 mainloop(). Both the hotkey and UDP paths call into this from their own
@@ -17,7 +19,7 @@ import threading
 import tkinter as tk
 
 _STATE_COLORS = {
-    'listening': '#ff3b30',   # red while capturing audio
+    'listening': '#34c759',   # green while capturing audio -- matches the ring
     'processing': '#ffcc00',  # amber while whisper transcribes
 }
 

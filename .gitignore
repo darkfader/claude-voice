@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
 scripts/dictation/.env
+firmware/secrets.yaml
 
 # Runtime state, not code
 state/*

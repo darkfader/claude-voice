@@ -44,6 +44,33 @@ esphome:
   includes:
     - claude_ptt.h
 
+# Both networks defined as static YAML entries, not mixing a static one
+# alongside the Improv-provisioned (BLE phone-tap) home network. The
+# earlier attempt did that mixing and the device got stuck permanently
+# retrying the out-of-range work network -- serial logs showed it pinned at
+# "Hidden candidate 'SOWNet' at index 0" through every retry cycle, never
+# falling through to try the home network at all. ESPHome's own wifi
+# component docs (see its internal state-machine comment block) note that a
+# network NOT seen in a scan gets treated as a "hidden candidate" requiring
+# blind-probe retries -- true of an out-of-range network exactly like a
+# genuinely hidden-SSID one, and something about that combined with a
+# runtime/NVS-stored (Improv) entry did not degrade/advance correctly.
+# Explicit `hidden: false` on both entries here rules out that
+# misclassification outright, since neither is actually a hidden-SSID AP,
+# just sometimes out of range. `priority:` (higher = preferred, per that
+# same state-machine comment) makes home win whenever both are in range,
+# rather than whichever the scan happens to return first.
+wifi:
+  networks:
+    - ssid: "Touwa"
+      password: !secret home_wifi_password
+      hidden: false
+      priority: 1
+    - ssid: "SOWNet"
+      password: !secret work_wifi_password
+      hidden: false
+      priority: 0
+
 micro_wake_word:
   models:
     - model: models/hey_claude.json
@@ -169,12 +196,27 @@ script:
                 id(group_volume_changed) = true;
                 id(dial_touched) = true;
                 id(ptt_active) = true;
+            # "Listening For Command" draws from the light's OWN current
+            # colour (id(led_ring).current_values), not a hardcoded one --
+            # setting red/green/blue here recolors the existing spin
+            # animation to green for PTT without needing a new effect, and
+            # matches the desktop overlay dot's colour for the same state.
             - light.turn_on:
                 id: voice_assistant_leds
                 brightness: 100%
+                red: 0%
+                green: 100%
+                blue: 0%
                 effect: "Listening For Command"
+            # Target resolution is mDNS-first now (see claude_ptt.h's
+            # file-level comment) -- whichever network's local
+            # dictation_service.py answers a "_claudeptt._udp" query wins,
+            # so this works unmodified whether the device is on the home or
+            # work network (see the `wifi: networks:` fallback list below).
+            # claude_ptt_udp_host/_port are only the LAST-RESORT fallback if
+            # that query times out.
             - lambda: |-
-                claude_ptt::get_instance(id(i2s_mics), "${claude_ptt_udp_host}", ${claude_ptt_udp_port}).start();
+                claude_ptt::get_instance(id(i2s_mics)).start("${claude_ptt_udp_host}", ${claude_ptt_udp_port});
   - id: claude_ptt_release
     then:
       - if:
@@ -183,7 +225,7 @@ script:
           then:
             - lambda: |-
                 id(ptt_active) = false;
-                claude_ptt::get_instance(id(i2s_mics), "${claude_ptt_udp_host}", ${claude_ptt_udp_port}).stop();
+                claude_ptt::get_instance(id(i2s_mics)).stop();
             # dial_touched reset immediately (not delayed like
             # group_volume_changed below): its only other effect is
             # control_leds' dial-touched branch (the volume-bar overlay), and
@@ -199,6 +241,44 @@ script:
             # still fire as a simple click underneath it.
             - delay: 1s
             - lambda: id(group_volume_changed) = false;
+
+# Native-API control surface so the desktop dictation service can show
+# "processing" on the ring for the few seconds faster-whisper takes to
+# transcribe, after the button is already released and claude_ptt_release
+# has reverted the ring to normal. There is no PC->device channel for this
+# otherwise: PTT audio only flows device->PC (see claude_ptt.h). The Python
+# side talks to the device directly over ESPHome's native API
+# (aioesphomeapi) rather than round-tripping through Home Assistant, since
+# the dictation service has no HA credentials of its own today and this is
+# purely a local visual signal.
+#
+# Deliberately NOT internal: true -- that flag doesn't just hide an entity
+# from HA's frontend, it makes ComponentIterator skip it for EVERY native
+# API client's list_entities response (include_internal_ defaults false with
+# no code path that ever sets it true for a normal ListEntitiesRequest;
+# confirmed in esphome/core/component_iterator.h). Marking this internal
+# would have made it undiscoverable to esphome_ring.py too, not just HA --
+# there is no such thing as "visible to a raw API client but not HA" via
+# this flag. Shows up as an ordinary switch entity in HA (like mute/
+# wake_sound/beta_firmware already do) as an accepted side effect.
+# "Thinking" also draws from the light's own current colour (same pattern as
+# "Listening For Command"), so setting red/green/blue here recolors it
+# yellow without a new effect.
+switch:
+  - platform: template
+    id: claude_ptt_processing
+    name: "Claude PTT Processing"
+    optimistic: true
+    turn_on_action:
+      - light.turn_on:
+          id: voice_assistant_leds
+          brightness: 100%
+          red: 100%
+          green: 80%
+          blue: 0%
+          effect: "Thinking"
+    turn_off_action:
+      - script.execute: control_leds
 
 sensor:
   - id: !extend dial

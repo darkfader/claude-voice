@@ -3,3 +3,6 @@ sounddevice==0.5.1
 numpy==2.1.3
 keyboard==0.13.5
 python-dotenv==1.0.1
+requests
+aioesphomeapi==45.7.0
+zeroconf==0.150.0

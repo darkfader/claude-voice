@@ -18,10 +18,31 @@
 // not a long-lived connection, and dropping the fd between presses avoids
 // holding an ESP32 socket slot (FD_SETSIZE is 10) for a stream that is idle
 // the overwhelming majority of the time.
+//
+// Target resolution: this device moves between networks (home, work --
+// see the `wifi: networks:` fallback list in custom-voice-pe.yaml), and
+// each has its own local machine running dictation_service.py at its own
+// (possibly DHCP-assigned) IP. Rather than hardcoding a host per network,
+// each press queries mDNS for a "_claudeptt._udp" service -- whichever
+// local dictation_service.py is advertising on the CURRENT network answers,
+// so the same firmware works unmodified wherever it's carried. Falls back
+// to a fixed host substitution (see custom-voice-pe.yaml) if the query
+// times out or nothing answers, so a network without mDNS/Bonjour support
+// still works if that fallback happens to be reachable there.
+//
+// mdns_query_ptr() is Espressif's own managed `mdns` component (already
+// linked in because ESPHome's own `mdns:` self-advertisement pulls it in),
+// not lwIP's separate mDNS responder -- confirmed by checking which one
+// actually ends up in managed_components/ for this build. Its query
+// functions are plain blocking calls with a timeout, not the callback-based
+// API lwIP's app would have required.
 
 #include "esphome/components/microphone/microphone_source.h"
 #include "esphome/components/socket/socket.h"
 #include "esphome/core/log.h"
+
+#include "mdns.h"
+#include "esp_netif.h"
 
 #include <memory>
 #include <string>
@@ -29,18 +50,59 @@
 namespace claude_ptt {
 
 static const char *const TAG = "claude_ptt";
+static const char *const kServiceType = "_claudeptt";
+static const char *const kServiceProto = "_udp";
+// Bounded so a press never hangs waiting on a network with no mDNS
+// responder -- 300ms is generous for an mDNS round-trip on a healthy LAN
+// (typically <50ms) while staying well under the length of even a quick
+// deliberate hold.
+static const uint32_t kMdnsQueryTimeoutMs = 300;
+
+// Best-effort: returns false (leaving host_out/port_out untouched) on any
+// failure -- no results, malformed response, no IPv4 address in the
+// answer. Callers must have an established fallback for that case.
+inline bool resolve_via_mdns(std::string &host_out, uint16_t &port_out) {
+  mdns_result_t *results = nullptr;
+  esp_err_t err = mdns_query_ptr(kServiceType, kServiceProto, kMdnsQueryTimeoutMs, /*max_results=*/1, &results);
+  if (err != ESP_OK || results == nullptr) {
+    return false;
+  }
+  bool found = false;
+  for (mdns_ip_addr_t *a = results->addr; a != nullptr; a = a->next) {
+    if (a->addr.type == ESP_IPADDR_TYPE_V4) {
+      char buf[16];
+      esp_ip4addr_ntoa(&a->addr.u_addr.ip4, buf, sizeof(buf));
+      host_out = buf;
+      port_out = results->port;
+      found = true;
+      break;
+    }
+  }
+  mdns_query_results_free(results);
+  return found;
+}
 
 class UdpPushToTalk {
  public:
-  UdpPushToTalk(esphome::microphone::Microphone *mic, std::string host, uint16_t port)
-      : host_(std::move(host)), port_(port), source_(mic, /*bits_per_sample=*/16, /*gain_factor=*/1, /*passive=*/false) {
+  explicit UdpPushToTalk(esphome::microphone::Microphone *mic)
+      : source_(mic, /*bits_per_sample=*/16, /*gain_factor=*/1, /*passive=*/false) {
     this->source_.add_channel(0);
     this->source_.add_data_callback([this](const std::vector<uint8_t> &data) { this->on_audio_(data); });
   }
 
-  void start() {
+  // fallback_host/fallback_port are used verbatim if the mDNS query finds
+  // nothing -- see the file-level comment for why resolution happens fresh
+  // on every press rather than once at construction.
+  void start(const std::string &fallback_host, uint16_t fallback_port) {
     if (this->running_) {
       return;
+    }
+    std::string host = fallback_host;
+    uint16_t port = fallback_port;
+    if (resolve_via_mdns(host, port)) {
+      ESP_LOGD(TAG, "PTT target via mDNS: %s:%u", host.c_str(), port);
+    } else {
+      ESP_LOGD(TAG, "PTT target via fallback (mDNS found nothing): %s:%u", host.c_str(), port);
     }
     this->socket_ = esphome::socket::socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (!this->socket_) {
@@ -52,10 +114,10 @@ class UdpPushToTalk {
       this->socket_.reset();
       return;
     }
-    this->dest_len_ = esphome::socket::set_sockaddr((struct sockaddr *) &this->dest_addr_, sizeof(this->dest_addr_),
-                                                      this->host_, this->port_);
+    this->dest_len_ =
+        esphome::socket::set_sockaddr((struct sockaddr *) &this->dest_addr_, sizeof(this->dest_addr_), host, port);
     if (this->dest_len_ == 0) {
-      ESP_LOGE(TAG, "Could not resolve PTT target %s:%u", this->host_.c_str(), this->port_);
+      ESP_LOGE(TAG, "Could not resolve PTT target %s:%u", host.c_str(), port);
       this->socket_.reset();
       return;
     }
@@ -97,8 +159,6 @@ class UdpPushToTalk {
     }
   }
 
-  std::string host_;
-  uint16_t port_;
   esphome::microphone::MicrophoneSource source_;
   std::unique_ptr<esphome::socket::Socket> socket_;
   struct sockaddr_storage dest_addr_ {};
@@ -106,12 +166,12 @@ class UdpPushToTalk {
   bool running_{false};
 };
 
-// Lazily-constructed singleton: the mic pointer/host/port are only used on
-// the first call (constructor args are ignored on later calls, same as any
-// function-local static), so every call site just passes the same
-// substituted config and gets back the one shared instance.
-inline UdpPushToTalk &get_instance(esphome::microphone::Microphone *mic, const std::string &host, uint16_t port) {
-  static UdpPushToTalk instance(mic, host, port);
+// Lazily-constructed singleton: the mic pointer is only used on the first
+// call (constructor args are ignored on later calls, same as any
+// function-local static), so every call site just passes the same mic and
+// gets back the one shared instance.
+inline UdpPushToTalk &get_instance(esphome::microphone::Microphone *mic) {
+  static UdpPushToTalk instance(mic);
   return instance;
 }
 

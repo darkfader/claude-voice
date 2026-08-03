@@ -6,18 +6,17 @@
 # top-level buildable stock target (confirmed in Task 1) — the plain
 # home-assistant-voice.yaml is a package fragment missing wifi SSID/AP and
 # esp32_improv/improv_serial, and cannot compile standalone.
-# Push-to-talk UDP target (claude_ptt.h / overlay.yaml's claude_ptt_hold_check).
-# No secrets.yaml convention exists in this firmware tree today, so this is a
-# plain substitution rather than !secret -- override host/port here with the
-# desktop's actual LAN IP (needs a static assignment or a DHCP reservation;
-# see docs/superpowers/specs/2026-08-02-local-voice-dictation-design.md)
-# before flashing.
+# Push-to-talk UDP target -- LAST-RESORT FALLBACK ONLY as of the mDNS
+# service-discovery change (claude_ptt.h resolves "_claudeptt._udp" fresh on
+# every press; see that file's top comment). Only used if that query times
+# out, e.g. a network with mDNS/Bonjour blocked. Plain substitution, not
+# !secret -- a LAN IP here isn't sensitive the way firmware/secrets.yaml's
+# WiFi password is.
 #
 # 192.168.2.31 is the desk's current DHCP lease on Ethernet 2, not a
-# reservation -- it can change on lease renewal and silently break PTT with
-# no error on either end (the ESP32 will happily send UDP to a stale IP,
-# and nothing listens there to say otherwise). Set a DHCP reservation for
-# this host, or a static IP, and update this value to match.
+# reservation -- it can change on lease renewal, silently degrading PTT to
+# "only works when mDNS succeeds." Set a DHCP reservation for this host, or
+# a static IP, and update this value to match.
 substitutions:
   claude_ptt_udp_host: "192.168.2.31"
   claude_ptt_udp_port: "6056"
