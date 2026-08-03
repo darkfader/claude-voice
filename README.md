@@ -15,7 +15,71 @@ Claude Code ↔ Home Assistant Voice integration.
 - Installing it → this file.
 - Hardware facts and UX decisions → [`docs/home-assistant-voice-device.md`](docs/home-assistant-voice-device.md).
 
+## Taking this to work
+
+The device now supports a second WiFi network (`firmware/overlay.yaml`'s
+`wifi: networks:` list — currently home + a work SSID, both defined as
+static entries so ESPHome can fall through to whichever is in range; see
+that file's comment for why a *mixed* static+Improv-provisioned setup
+caused a real connectivity outage before landing on this). What actually
+works once the device is on the work network:
+
+- **Push-to-talk (hold the center button, talk) — works fully.** It
+  bypasses Home Assistant entirely (see `firmware/claude_ptt.h`) and finds
+  wherever `dictation_service.py` is running via mDNS
+  (`_claudeptt._udp`) — no IP configuration needed on either side, as long
+  as a machine on the work network is running the dictation service.
+- **"Hey Claude"/"Okay Nabu" wake words, dial rotation, button-driven
+  session cycling via `ha_bridge.py` — do NOT work at work.** All three
+  depend on a live connection to the home Home Assistant instance
+  (`voice_assistant:`'s wake-word pipeline, and `ha_bridge.py`'s websocket
+  subscription to HA's event stream), which is not reachable from a
+  different network without a VPN. This is a known, currently-accepted
+  limitation, not a bug — see the design spec
+  (`docs/superpowers/specs/2026-08-02-local-voice-dictation-design.md`)
+  for the VPN option that was considered and deferred.
+
+### What to install on the work machine
+
+1. **Python 3.x**, then:
+   ```powershell
+   pip install -r claude-voice/scripts/dictation/requirements.txt
+   ```
+2. **Copy and fill in the dictation service's `.env`:**
+   ```powershell
+   Copy-Item claude-voice/scripts/dictation/.env.example claude-voice/scripts/dictation/.env
+   ```
+   At minimum set `DICTATION_WHISPER_DEVICE` (likely `cpu` unless the work
+   machine has an NVIDIA GPU — `cuda` will fail loudly if not) and
+   `DICTATION_WHISPER_MODEL` (a smaller model, e.g. `small` or `base`, if
+   running on CPU — `large-v3-turbo` is tuned for the home 3090 and will be
+   slow on CPU). `CLAUDE_PTT_ESPHOME_*` and `DICTATION_UDP_PORT` can stay
+   as-is; mDNS means no host/IP needs setting per-network.
+3. **Run it:**
+   ```powershell
+   python claude-voice/scripts/dictation/dictation_service.py
+   ```
+4. **Install the VS Code extension** (see
+   [`vscode-extension/README.md`](vscode-extension/README.md)) so dictated
+   text lands in the right Claude Code session/window. This works locally
+   regardless of HA connectivity.
+5. On the device: hold the center button, speak, release. The transcript
+   should appear in whichever session/window the extension currently has
+   marked active (or wherever has OS focus if none is tracked).
+
+`ha_bridge.py`/`ha-bridge.ps1` do not need to be installed or running on
+the work machine for any of this — they only matter for the HA-dependent
+features listed above as not working there anyway.
+
 ## Components
+
+> **PowerShell → Python migration in progress.** `scripts/*.py` are the
+> modules actually running now (`ha_bridge.py` is the live bridge process,
+> replacing `ha-bridge.ps1`) — the `.psm1`/`.ps1` originals below are kept
+> alongside as the source of truth being ported *from*, not what's live.
+> Each `.py` file's own top comment says which original it mirrors. Run
+> `pip install -r scripts/requirements.txt` for the Python bridge's
+> dependencies (separate from `scripts/dictation/requirements.txt`).
 
 Pure logic (no I/O, fully unit-tested — these hold the decision-making):
 - `scripts/NotifyPlan.psm1` — `Get-NotifyPlan`: given an event, a session's
@@ -475,9 +539,14 @@ Because `UserPromptSubmit` fires regardless of who typed the reply, no additiona
 
 Run through all four phases to confirm the integration is working:
 
-There is no `single_press` event on this device — a single press just
-triggers Assist listening (built into the firmware) and is never published
-as an automatable button event, so it plays no role in this integration.
+**Single click now fires a `single_press` event** (as of the firmware's
+`on_multi_click` redefinition in `custom-voice-pe.yaml`) instead of
+starting HA's Assist listening — it replies "continue"/"okay" into the
+selected pending session directly, or falls back to focusing (never
+auto-replying) when that session is in `attention` state, so a permission
+prompt is never blind-approved from across the room. See
+[`docs/user-guide.md`](docs/user-guide.md) for the current button map;
+the phases below predate this and only exercise double/long/triple-press.
 
 #### Phase 1: Single-session notification flow
 - [ ] Open a Claude Code session in this repo (or another project with the same three hooks)

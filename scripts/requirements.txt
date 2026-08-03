@@ -1,0 +1,8 @@
+# claude-voice/scripts/requirements.txt
+# For ha_bridge.py and its supporting modules (the PowerShell -> Python
+# migration -- see the .psm1/.ps1 files still present alongside these for
+# the originals being ported from).
+requests==2.34.2
+python-dotenv==1.2.2
+websocket-client==1.9.0
+psutil==7.2.2
