@@ -634,6 +634,41 @@ Describe 'known session registry' {
         $after.color    | Should -Not -BeNullOrEmpty
         ($after.color -join ',') | Should -Be ((ConvertFrom-HueSlot -Slot $after.slot) -join ',')
     }
+
+    It 'does not fade a working session whose transcript is still being written past the idle-fade window' {
+        # A single long-running turn can leave lastSeen (hook-driven) hours
+        # stale while the session is genuinely still active -- the transcript
+        # file is still growing, which is the real liveness signal for this
+        # case. Simulated here by touching the transcript again AFTER the
+        # fade window has already elapsed relative to registration.
+        $t = Join-Path $TestDrive "working-live-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'working' -TranscriptPath $t
+        Set-KnownIdleFadeHours -Hours 0.0001
+        Start-Sleep -Milliseconds 300
+        'still writing' | Add-Content -Path $t
+        Start-Sleep -Milliseconds 50
+
+        $after = (Get-PendingState).known['s1']
+        $after.ringSlot | Should -Not -BeNullOrEmpty
+        $after.color    | Should -Not -BeNullOrEmpty
+    }
+
+    It 'still fades a working session whose transcript has ALSO gone stale (crashed mid-turn)' {
+        # Distinguishes "genuinely still running" from "orphaned mid-turn" --
+        # the entire point of using transcript mtime is that a crashed
+        # session's transcript stops updating too, so it must not be exempted
+        # from the fade forever just because activity is stuck on 'working'.
+        $t = Join-Path $TestDrive "working-crashed-$([guid]::NewGuid().ToString('N')).jsonl"
+        'x' | Set-Content -Path $t
+        Register-KnownSession -SessionId 's1' -Project 'P' -Cwd 'C:/git/P' -Activity 'working' -TranscriptPath $t
+        Set-KnownIdleFadeHours -Hours 0.0001
+        Start-Sleep -Milliseconds 500
+
+        $after = (Get-PendingState).known['s1']
+        $after.ringSlot | Should -BeNullOrEmpty
+        $after.color    | Should -BeNullOrEmpty
+    }
 }
 
 Describe 'known session colour distinctness' {

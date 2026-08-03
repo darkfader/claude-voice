@@ -36,9 +36,11 @@ function Set-KnownExpiryHours {
 # shows in the VS Code threads list, just with no ring presence. This is what
 # actually frees slots for other sessions; a thread you're still "in" keeps
 # its slot indefinitely (see KnownExpiryHours/transcript-deletion above),
-# but with only 12 physical ring positions, a thread nobody has touched in an
-# hour should give its slot back.
-$script:KnownIdleFadeHours = 1
+# but with only 12 physical ring positions, a thread nobody has touched in
+# half an hour should give its slot back. Was 1h; halved after the ring
+# accumulated enough old idle threads in the background to be distracting in
+# practice -- 30 min still comfortably outlasts a normal thinking pause.
+$script:KnownIdleFadeHours = 0.5
 
 function Set-KnownIdleFadeHours {
     param([Parameter(Mandatory)][double]$Hours)
@@ -267,13 +269,41 @@ function Get-PendingState {
         [datetime]$lastSeenAt = [datetime]::MinValue
         [void][datetime]::TryParse([string]$state.known[$id].lastSeen, [ref]$lastSeenAt)
 
+        # For a 'working' session, lastSeen is frozen at whenever the last
+        # hook fired (turn start, typically) -- a single long-running turn
+        # with no intermediate hook can leave it hours stale while the
+        # session is still genuinely running, which previously meant a
+        # perfectly healthy long turn got its ring colour faded (and,
+        # eventually, hard-expired) right out from under it. Claude Code
+        # keeps appending to the transcript file for as long as a turn is
+        # actually in progress, even with no hook firing, so its mtime is a
+        # truer liveness signal than the hook-driven timestamp for this one
+        # case. Deliberately does NOT just exempt 'working' outright: a
+        # CRASHED mid-turn session (terminal closed, Stop never fires) has a
+        # transcript that stops updating too, so it still fades/expires
+        # normally -- this only protects a session that is actually still
+        # writing, not one merely stuck claiming to be 'working' forever.
+        [datetime]$livenessAt = $lastSeenAt
+        if ($state.known[$id].activity -eq 'working') {
+            $transcriptPath = [string]$state.known[$id].transcriptPath
+            if ($transcriptPath -and (Test-Path -LiteralPath $transcriptPath)) {
+                try {
+                    $mtime = (Get-Item -LiteralPath $transcriptPath -ErrorAction Stop).LastWriteTime
+                    if ($mtime -gt $livenessAt) { $livenessAt = $mtime }
+                } catch {
+                    # Unreadable transcript -- fall back to lastSeenAt, same
+                    # as if this block never ran.
+                }
+            }
+        }
+
         # Hard expiry: 48h idle removes the entry ALWAYS, transcript or not.
         # Checked first and unconditionally -- this is the one rule that
         # overrides "keep forever if transcript exists" below. A thread
         # untouched for two days is gone from the ring regardless of whether
         # its transcript file still happens to exist on disk.
-        if ($lastSeenAt -ne [datetime]::MinValue -and
-            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownHardExpiryHours)) {
+        if ($livenessAt -ne [datetime]::MinValue -and
+            $livenessAt -lt (Get-Date).AddHours(-1 * $script:KnownHardExpiryHours)) {
             $state.known.Remove($id) | Out-Null
             continue
         }
@@ -296,8 +326,8 @@ function Get-PendingState {
         # same $isFaded boolean used by the fade block below closes that:
         # neither block runs at all while the entry is within the fade
         # window, so nothing repopulates ringSlot/color ahead of slot.
-        $isFaded = $lastSeenAt -ne [datetime]::MinValue -and
-            $lastSeenAt -lt (Get-Date).AddHours(-1 * $script:KnownIdleFadeHours)
+        $isFaded = $livenessAt -ne [datetime]::MinValue -and
+            $livenessAt -lt (Get-Date).AddHours(-1 * $script:KnownIdleFadeHours)
 
         if (-not $isFaded) {
             if (-not $state.known[$id].ContainsKey('ringSlot') -or $null -eq $state.known[$id].ringSlot) {
